@@ -1,0 +1,79 @@
+version: '3.8'
+
+services:
+  tc_mysql:
+    build:
+      context: ./mysql
+      dockerfile: dockerfile
+    container_name: tc_fcgi_mysql
+    networks:
+      my_net:
+        ipv4_address: 172.30.0.2
+    restart: unless-stopped
+    ports:
+      - "3307:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  nginx_fastdfs:
+    build:
+      context: ..
+      dockerfile: docker/nginx_fastdfs/dockerfile
+    container_name: tc_fcgi_nginx_fastdfs
+    networks:
+      my_net:
+        ipv4_address: 172.30.0.3
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - fastdfs_data:/fastdfs_data_and_log
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sk -o /dev/null -w '%{http_code}' https://127.0.0.1:443/ | grep -qE '^[2]'"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+  fastcgi_app:
+    build:
+      context: ..
+      dockerfile: docker/fastcgi_app/dockerfile
+    container_name: tc_fcgi_app
+    networks:
+      my_net:
+        ipv4_address: 172.30.0.4
+    restart: unless-stopped
+    ports:
+      - "10000-10012:10000-10012"
+    volumes:
+      - ./nginx_fastdfs/client.conf:/etc/fdfs/client.conf
+    depends_on:
+      tc_mysql:
+        condition: service_healthy
+      nginx_fastdfs:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "lsof", "-i", ":10000"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+networks:
+  my_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.0.0/16
+          gateway: 172.30.0.1
+
+volumes:
+  fastdfs_data:
+  mysql_data:

@@ -1,0 +1,97 @@
+FROM ubuntu:20.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Asia/Shanghai
+
+# 安装基础依赖
+RUN apt-get update && apt-get install -y \
+    gcc g++ make \
+    libmysqlclient-dev \
+    libfcgi-dev \
+    spawn-fcgi \
+    redis-server \
+    wget curl vim lsof procps unzip \
+    ca-certificates \
+    libtool \
+    libcurl4-openssl-dev \
+    libopenblas-dev \
+    liblapack-dev \
+    python3-pip \
+    git \
+    && pip3 install cmake \
+    && rm -rf /var/lib/apt/lists/*
+
+# 复制预下载的依赖源码
+COPY deps/hiredis-v1.0.2.tar.gz /tmp/
+COPY deps/libfastcommon-V1.0.43.tar.gz /tmp/
+COPY deps/fastdfs-V6.06.tar.gz /tmp/
+COPY deps/faiss-v1.7.2.tar.gz /tmp/
+
+# 编译安装 hiredis
+RUN cd /tmp && \
+    tar xzf hiredis-v1.0.2.tar.gz && \
+    cd hiredis-1.0.2 && \
+    make && make install && \
+    ldconfig && \
+    rm -rf /tmp/hiredis-1.0.2 /tmp/hiredis-v1.0.2.tar.gz
+
+# 编译安装 libfastcommon V1.0.43
+RUN cd /tmp && \
+    tar xzf libfastcommon-V1.0.43.tar.gz && \
+    cd libfastcommon-1.0.43 && \
+    ./make.sh && ./make.sh install && \
+    ldconfig && \
+    rm -rf /tmp/libfastcommon-1.0.43 /tmp/libfastcommon-V1.0.43.tar.gz
+
+# 编译安装 FastDFS V6.06
+RUN cd /tmp && \
+    tar xzf fastdfs-V6.06.tar.gz && \
+    cd fastdfs-6.06 && \
+    ./make.sh && ./make.sh install && \
+    ldconfig && \
+    rm -rf /tmp/fastdfs-6.06 /tmp/fastdfs-V6.06.tar.gz
+
+# 编译安装 FAISS v1.7.2（CPU 版，用于 AI 向量检索）
+RUN cd /tmp && \
+    tar xzf faiss-v1.7.2.tar.gz && \
+    cd faiss-1.7.2 && \
+    cmake -B build \
+      -DFAISS_ENABLE_GPU=OFF \
+      -DFAISS_ENABLE_PYTHON=OFF \
+      -DBUILD_SHARED_LIBS=ON \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DBUILD_TESTING=OFF && \
+    cmake --build build -j$(nproc) && \
+    cmake --install build && \
+    ldconfig && \
+    rm -rf /tmp/faiss-1.7.2 /tmp/faiss-v1.7.2.tar.gz
+
+# 设置库搜索路径
+ENV LIBRARY_PATH="/usr/lib:/usr/lib64:/usr/local/lib"
+ENV LD_LIBRARY_PATH="/usr/lib:/usr/lib64:/usr/local/lib"
+
+WORKDIR /app
+
+# 复制项目源码
+COPY src_cgi/ /app/src_cgi/
+COPY common/ /app/common/
+COPY include/ /app/include/
+COPY Makefile /app/Makefile
+COPY conf/ /app/conf/
+
+# 创建输出目录
+RUN mkdir -p /app/bin_cgi /app/logs
+
+# 编译项目
+RUN cd /app && make clean && make
+
+# 复制启动脚本
+COPY docker/fastcgi_app/start.sh /app/start.sh
+RUN chmod +x /app/start.sh
+
+# 复制 Docker 版配置文件
+COPY docker/fastcgi_app/cfg.json /app/conf/cfg.json
+
+EXPOSE 10000-10012
+
+CMD ["/app/start.sh"]

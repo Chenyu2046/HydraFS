@@ -1,0 +1,55 @@
+{
+	"redis":
+	{
+		"ip": "127.0.0.1",
+		"port": "6379"
+	},
+	
+	"mysql":
+	{
+		"ip": "127.0.0.1",
+		"port": "3306",
+		"database": "yuncuchu",
+		"user": "root",
+		"password": "123456"
+	},
+	
+	"dfs_path":
+	{
+		"client": "/etc/fdfs/client.conf"
+	},
+	
+	"web_server":
+	{
+		"ip": "114.215.169.66",
+		"port": "80"
+	},
+	
+	"storage_web_server":
+	{
+		"ip": "114.215.169.66",
+		"port": "80"
+	},
+
+	"public_server":
+	{
+		"ip": "xxx.xx.xx.xx",
+		"port": "8080"
+	},
+
+	"dashscope":
+	{
+		"api_key": "",
+		"embedding_model": "text-embedding-v3",
+		"vl_model": "qwen-vl-plus",
+		"embedding_dimension": "1024"
+	},
+
+	"faiss":
+	{
+		"index_path": "/data/faiss/index.bin",
+		"user_index_dir": "/data/faiss/users",
+		"id_map_path": "/data/faiss/id_map.json"
+	}
+
+}
