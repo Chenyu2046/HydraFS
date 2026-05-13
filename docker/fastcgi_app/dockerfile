@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y \
     libcurl4-openssl-dev \
     libopenblas-dev \
     liblapack-dev \
+    poppler-utils \
     python3-pip \
     git \
     && pip3 install cmake \

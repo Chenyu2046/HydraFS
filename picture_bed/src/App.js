@@ -7,6 +7,7 @@ import ImageList from './pages/ImageList';
 import FileList from './pages/FileList';
 import SharedFiles from './pages/SharedFiles';
 import TopDownloads from './pages/TopDownloads';
+import WikiDetail from './pages/WikiDetail';
 import NavBar from './components/NavBar';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 
@@ -46,6 +47,7 @@ function AppRoutes() {
           <Route path="/files" element={<PrivateRoute><FileList /></PrivateRoute>} />
           <Route path="/shared" element={<PrivateRoute><SharedFiles /></PrivateRoute>} />
           <Route path="/top-downloads" element={<PrivateRoute><TopDownloads /></PrivateRoute>} />
+          <Route path="/wiki/:md5" element={<PrivateRoute><WikiDetail /></PrivateRoute>} />
         </Routes>
       </GlassContent>
     </StyledLayout>

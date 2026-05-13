@@ -49,6 +49,11 @@ mkdir -p /data/faiss
 echo -n "AI："
 spawn-fcgi -a 0.0.0.0 -p 10012 -f /app/bin_cgi/ai
 
+# 知识层异步 worker（后台进程）
+echo -n "KnowledgeWorker："
+/app/bin_cgi/knowledge_worker &
+echo "OK"
+
 # 创建分片临时目录
 mkdir -p /tmp/chunks
 

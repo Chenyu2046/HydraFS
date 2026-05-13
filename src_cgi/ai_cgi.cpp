@@ -26,6 +26,7 @@ extern "C" {
 #include "cfg.h"
 #include "cJSON.h"
 #include "md5.h"
+#include "knowledge_task.h"
 }
 
 #include "dashscope_api.h"
@@ -267,6 +268,115 @@ static const char *resolve_api_key(cJSON *apikey_item)
         return apikey_item->valuestring;
     }
     return NULL;
+}
+
+static int load_persisted_api_key(MYSQL *conn, const char *user, char *key_buf, size_t key_buf_len)
+{
+    char *escaped_user = escape_mysql_text(conn, user);
+    if (!escaped_user) return -1;
+
+    char sql[512] = {0};
+    snprintf(sql, sizeof(sql),
+             "SELECT api_key FROM user_info WHERE user_name='%s' LIMIT 1",
+             escaped_user);
+    free(escaped_user);
+
+    if (mysql_query(conn, sql) != 0) return -1;
+    MYSQL_RES *res = mysql_store_result(conn);
+    if (!res) return -1;
+
+    int ret = -1;
+    MYSQL_ROW row = mysql_fetch_row(res);
+    if (row && row[0]) {
+        strncpy(key_buf, row[0], key_buf_len - 1);
+        key_buf[key_buf_len - 1] = '\0';
+        ret = 0;
+    }
+
+    mysql_free_result(res);
+    return ret;
+}
+
+static int save_persisted_api_key(MYSQL *conn, const char *user, const char *api_key)
+{
+    char *escaped_user = escape_mysql_text(conn, user);
+    char *escaped_key = escape_mysql_text(conn, api_key ? api_key : "");
+    if (!escaped_user || !escaped_key) {
+        if (escaped_user) free(escaped_user);
+        if (escaped_key) free(escaped_key);
+        return -1;
+    }
+
+    char sql[1024] = {0};
+    snprintf(sql, sizeof(sql),
+             "UPDATE user_info SET api_key='%s' WHERE user_name='%s'",
+             escaped_key, escaped_user);
+
+    free(escaped_user);
+    free(escaped_key);
+    return mysql_query(conn, sql) == 0 ? 0 : -1;
+}
+
+static int json_array_contains_string(cJSON *array, const char *value)
+{
+    if (!array || !value || array->type != cJSON_Array) return 0;
+    for (cJSON *item = array->child; item; item = item->next) {
+        if (item && item->valuestring && strcmp(item->valuestring, value) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int build_shared_tags_reason(const char *base_tags_json, const char *candidate_tags_json,
+                                    char *reason, size_t reason_len)
+{
+    if (!reason || reason_len == 0) return 0;
+    reason[0] = '\0';
+    if (!base_tags_json || !candidate_tags_json) return 0;
+
+    cJSON *base = cJSON_Parse(base_tags_json);
+    cJSON *candidate = cJSON_Parse(candidate_tags_json);
+    if (!base || !candidate || base->type != cJSON_Array || candidate->type != cJSON_Array) {
+        if (base) cJSON_Delete(base);
+        if (candidate) cJSON_Delete(candidate);
+        return 0;
+    }
+
+    char merged[256] = {0};
+    int count = 0;
+    for (cJSON *item = base->child; item; item = item->next) {
+        if (!item || !item->valuestring || strlen(item->valuestring) == 0) continue;
+        if (!json_array_contains_string(candidate, item->valuestring)) continue;
+
+        if (count > 0) {
+            strncat(merged, "、", sizeof(merged) - strlen(merged) - 1);
+        }
+        strncat(merged, item->valuestring, sizeof(merged) - strlen(merged) - 1);
+        count++;
+        if (count >= 3) break;
+    }
+
+    if (count > 0) {
+        snprintf(reason, reason_len, "共享标签：%s", merged);
+    }
+
+    cJSON_Delete(base);
+    cJSON_Delete(candidate);
+    return count;
+}
+
+static int result_array_contains_md5(cJSON *array, const char *md5)
+{
+    if (!array || !md5) return 0;
+    for (cJSON *item = array->child; item; item = item->next) {
+        if (!item || item->type != cJSON_Object) continue;
+        cJSON *md5_item = cJSON_GetObjectItem(item, "md5");
+        if (md5_item && md5_item->valuestring && strcmp(md5_item->valuestring, md5) == 0) {
+            return 1;
+        }
+    }
+    return 0;
 }
 
 typedef struct {
@@ -1102,6 +1212,107 @@ static int generate_description_for_file(MYSQL *conn, const char *md5, const cha
     return 0;
 }
 
+static int handle_get_apikey(char *post_data)
+{
+    MYSQL *conn = NULL;
+    cJSON *root = cJSON_Parse(post_data);
+    char api_key[256] = {0};
+
+    if (!root) {
+        printf("{\"code\":1,\"msg\":\"invalid json\"}\n");
+        return -1;
+    }
+
+    cJSON *user_item = cJSON_GetObjectItem(root, "user");
+    cJSON *token_item = cJSON_GetObjectItem(root, "token");
+    if (!user_item || !token_item) {
+        printf("{\"code\":1,\"msg\":\"missing fields\"}\n");
+        cJSON_Delete(root);
+        return -1;
+    }
+
+    if (verify_token(user_item->valuestring, token_item->valuestring) != 0) {
+        printf("{\"code\":4,\"msg\":\"token error\"}\n");
+        cJSON_Delete(root);
+        return -1;
+    }
+
+    conn = msql_conn(mysql_user, mysql_pwd, mysql_db);
+    if (!conn) {
+        printf("{\"code\":1,\"msg\":\"db error\"}\n");
+        cJSON_Delete(root);
+        return -1;
+    }
+    mysql_query(conn, "set names utf8mb4");
+
+    if (load_persisted_api_key(conn, user_item->valuestring, api_key, sizeof(api_key)) != 0) {
+        api_key[0] = '\0';
+    }
+
+    cJSON *resp = cJSON_CreateObject();
+    cJSON_AddNumberToObject(resp, "code", 0);
+    cJSON *data = cJSON_CreateObject();
+    cJSON_AddStringToObject(data, "api_key", api_key);
+    cJSON_AddItemToObject(resp, "data", data);
+
+    char *resp_str = cJSON_PrintUnformatted(resp);
+    if (resp_str) {
+        printf("%s\n", resp_str);
+        free(resp_str);
+    }
+
+    cJSON_Delete(resp);
+    mysql_close(conn);
+    cJSON_Delete(root);
+    return 0;
+}
+
+static int handle_set_apikey(char *post_data)
+{
+    MYSQL *conn = NULL;
+    cJSON *root = cJSON_Parse(post_data);
+
+    if (!root) {
+        printf("{\"code\":1,\"msg\":\"invalid json\"}\n");
+        return -1;
+    }
+
+    cJSON *user_item = cJSON_GetObjectItem(root, "user");
+    cJSON *token_item = cJSON_GetObjectItem(root, "token");
+    cJSON *api_key_item = cJSON_GetObjectItem(root, "api_key");
+    if (!user_item || !token_item || !api_key_item || api_key_item->type != cJSON_String) {
+        printf("{\"code\":1,\"msg\":\"missing fields\"}\n");
+        cJSON_Delete(root);
+        return -1;
+    }
+
+    if (verify_token(user_item->valuestring, token_item->valuestring) != 0) {
+        printf("{\"code\":4,\"msg\":\"token error\"}\n");
+        cJSON_Delete(root);
+        return -1;
+    }
+
+    conn = msql_conn(mysql_user, mysql_pwd, mysql_db);
+    if (!conn) {
+        printf("{\"code\":1,\"msg\":\"db error\"}\n");
+        cJSON_Delete(root);
+        return -1;
+    }
+    mysql_query(conn, "set names utf8mb4");
+
+    if (save_persisted_api_key(conn, user_item->valuestring, api_key_item->valuestring) != 0) {
+        printf("{\"code\":1,\"msg\":\"save api_key failed\"}\n");
+        mysql_close(conn);
+        cJSON_Delete(root);
+        return -1;
+    }
+
+    printf("{\"code\":0,\"msg\":\"ok\"}\n");
+    mysql_close(conn);
+    cJSON_Delete(root);
+    return 0;
+}
+
 /**
  * 处理 describe 请求：为文件生成 AI 描述 + embedding，存入 MySQL 和 FAISS
  * POST body: { "user": "xxx", "token": "xxx", "md5": "xxx", "filename": "xxx", "type": "png", "api_key": "sk-xxx" }
@@ -1265,6 +1476,12 @@ static int handle_describe(char *post_data)
     }
 
     if (force_update) {
+        if (is_parseable_type(type)) {
+            if (enqueue_parse_task(conn, user, md5, type, "describe_force") != 0) {
+                printf("{\"code\":1,\"msg\":\"knowledge task enqueue failed\"}\n");
+                goto END;
+            }
+        }
         if (!skip_rebuild && rebuild_user_faiss_index(conn, user) < 0) {
             printf("{\"code\":1,\"msg\":\"rebuild failed\"}\n");
             goto END;
@@ -1478,10 +1695,12 @@ static int handle_search(char *post_data)
             MYSQL_RES *res = NULL;
             MYSQL_ROW row = NULL;
             snprintf(sql_cmd, sizeof(sql_cmd),
-                     "SELECT uad.md5, ufl.file_name, uad.description, fi.url, fi.size, fi.type "
+                     "SELECT uad.md5, ufl.file_name, uad.description, fi.url, fi.size, fi.type, "
+                     "uad.summary, uad.tags_json, CASE WHEN wp.id IS NOT NULL THEN 1 ELSE 0 END AS wiki_ready "
                      "FROM user_file_ai_desc uad "
                      "JOIN user_file_list ufl ON ufl.user = uad.user AND ufl.md5 = uad.md5 "
                      "JOIN file_info fi ON fi.md5 = uad.md5 "
+                     "LEFT JOIN wiki_page wp ON wp.user = uad.user AND wp.md5 = uad.md5 AND wp.status = 'active' "
                      "WHERE uad.user = '%s' AND uad.faiss_id = %ld AND uad.status = 1 "
                      "LIMIT 1",
                      escaped_user, ids[i]);
@@ -1509,7 +1728,24 @@ static int handle_search(char *post_data)
 
                 cJSON_AddStringToObject(file_obj, "size", row[4] ? row[4] : "0");
                 cJSON_AddStringToObject(file_obj, "type", row[5] ? row[5] : "");
+
+                /* summary 和 tags */
+                if (row[6] && strlen(row[6]) > 0) {
+                    cJSON_AddStringToObject(file_obj, "summary", row[6]);
+                }
+                if (row[7] && strlen(row[7]) > 0) {
+                    cJSON_AddStringToObject(file_obj, "tags", row[7]);
+                }
+                cJSON_AddNumberToObject(file_obj, "wiki_ready", (row[8] && atoi(row[8]) > 0) ? 1 : 0);
+
                 cJSON_AddNumberToObject(file_obj, "score", scores[i]);
+
+                /* 命中原因：只保留可证实的语义相似度 */
+                {
+                    char reason[128] = {0};
+                    snprintf(reason, sizeof(reason), "语义相似度 %.2f", scores[i]);
+                    cJSON_AddStringToObject(file_obj, "reason", reason);
+                }
                 cJSON_AddItemToArray(files_arr, file_obj);
                 result_count++;
             }
@@ -1540,9 +1776,462 @@ END:
 }
 
 /**
- * 处理 rebuild 请求：从 MySQL 重建 FAISS 索引
- * POST body: { "user": "xxx", "token": "xxx" }
+ * 处理 file_card 请求：获取文件知识卡片
+ * POST body: { "user": "xxx", "token": "xxx", "md5": "xxx" }
  */
+static int handle_file_card(char *post_data)
+{
+    int ret = -1;
+    MYSQL *conn = NULL;
+    cJSON *root = NULL;
+    char *escaped_user = NULL;
+    char *escaped_md5 = NULL;
+
+    root = cJSON_Parse(post_data);
+    if (!root) {
+        printf("{\"code\":1,\"msg\":\"invalid json\"}\n");
+        return -1;
+    }
+
+    cJSON *user_item = cJSON_GetObjectItem(root, "user");
+    cJSON *token_item = cJSON_GetObjectItem(root, "token");
+    cJSON *md5_item = cJSON_GetObjectItem(root, "md5");
+    if (!user_item || !token_item || !md5_item) {
+        printf("{\"code\":1,\"msg\":\"missing fields\"}\n");
+        cJSON_Delete(root);
+        return -1;
+    }
+
+    if (verify_token(user_item->valuestring, token_item->valuestring) != 0) {
+        printf("{\"code\":4,\"msg\":\"token error\"}\n");
+        cJSON_Delete(root);
+        return -1;
+    }
+
+    conn = msql_conn(mysql_user, mysql_pwd, mysql_db);
+    if (!conn) {
+        printf("{\"code\":1,\"msg\":\"db error\"}\n");
+        cJSON_Delete(root);
+        return -1;
+    }
+    mysql_query(conn, "set names utf8mb4");
+
+    escaped_user = escape_mysql_text(conn, user_item->valuestring);
+    escaped_md5 = escape_mysql_text(conn, md5_item->valuestring);
+    if (!escaped_user || !escaped_md5) {
+        printf("{\"code\":1,\"msg\":\"db error\"}\n");
+        goto END;
+    }
+
+    {
+        char sql[2048] = {0};
+        snprintf(sql, sizeof(sql),
+                 "SELECT uad.parse_status, uad.summary, uad.tags_json, uad.description, "
+                 "ufl.file_name, fi.type, fi.size, fi.url, "
+                 "CASE WHEN wp.id IS NOT NULL THEN 1 ELSE 0 END as wiki_ready "
+                 "FROM user_file_list ufl "
+                 "LEFT JOIN user_file_ai_desc uad ON uad.user=ufl.user AND uad.md5=ufl.md5 "
+                 "LEFT JOIN file_info fi ON fi.md5=ufl.md5 "
+                 "LEFT JOIN wiki_page wp ON wp.user=ufl.user AND wp.md5=ufl.md5 AND wp.status='active' "
+                 "WHERE ufl.user='%s' AND ufl.md5='%s' LIMIT 1",
+                 escaped_user, escaped_md5);
+
+        if (mysql_query(conn, sql) == 0) {
+            MYSQL_RES *res = mysql_store_result(conn);
+            if (res) {
+                MYSQL_ROW row = mysql_fetch_row(res);
+                if (row) {
+                    cJSON *resp = cJSON_CreateObject();
+                    cJSON_AddNumberToObject(resp, "code", 0);
+                    cJSON *data = cJSON_CreateObject();
+                    cJSON_AddStringToObject(data, "md5", md5_item->valuestring);
+                    cJSON_AddStringToObject(data, "parse_status", row[0] ? row[0] : "pending");
+                    cJSON_AddStringToObject(data, "summary", row[1] ? row[1] : "");
+                    cJSON_AddStringToObject(data, "tags", row[2] ? row[2] : "[]");
+                    cJSON_AddStringToObject(data, "description", row[3] ? row[3] : "");
+                    cJSON_AddStringToObject(data, "filename", row[4] ? row[4] : "");
+                    cJSON_AddStringToObject(data, "type", row[5] ? row[5] : "");
+                    cJSON_AddStringToObject(data, "size", row[6] ? row[6] : "0");
+                    cJSON_AddStringToObject(data, "url", row[7] ? row[7] : "");
+                    cJSON_AddNumberToObject(data, "wiki_ready", (row[8] && atoi(row[8]) > 0) ? 1 : 0);
+                    cJSON_AddItemToObject(resp, "data", data);
+                    char *resp_str = cJSON_PrintUnformatted(resp);
+                    if (resp_str) { printf("%s\n", resp_str); free(resp_str); }
+                    cJSON_Delete(resp);
+                    ret = 0;
+                } else {
+                    printf("{\"code\":1,\"msg\":\"file not found\"}\n");
+                }
+                mysql_free_result(res);
+            }
+        } else {
+            printf("{\"code\":1,\"msg\":\"query failed\"}\n");
+        }
+    }
+
+END:
+    if (escaped_user) free(escaped_user);
+    if (escaped_md5) free(escaped_md5);
+    if (conn) mysql_close(conn);
+    if (root) cJSON_Delete(root);
+    return ret;
+}
+
+/**
+ * 处理 wiki 请求：获取文件级 Wiki 页面
+ * POST body: { "user": "xxx", "token": "xxx", "md5": "xxx" }
+ */
+static int handle_wiki(char *post_data)
+{
+    int ret = -1;
+    MYSQL *conn = NULL;
+    cJSON *root = NULL;
+    char *escaped_user = NULL;
+    char *escaped_md5 = NULL;
+
+    root = cJSON_Parse(post_data);
+    if (!root) { printf("{\"code\":1,\"msg\":\"invalid json\"}\n"); return -1; }
+
+    cJSON *user_item = cJSON_GetObjectItem(root, "user");
+    cJSON *token_item = cJSON_GetObjectItem(root, "token");
+    cJSON *md5_item = cJSON_GetObjectItem(root, "md5");
+    if (!user_item || !token_item || !md5_item) {
+        printf("{\"code\":1,\"msg\":\"missing fields\"}\n");
+        cJSON_Delete(root); return -1;
+    }
+    if (verify_token(user_item->valuestring, token_item->valuestring) != 0) {
+        printf("{\"code\":4,\"msg\":\"token error\"}\n");
+        cJSON_Delete(root); return -1;
+    }
+
+    conn = msql_conn(mysql_user, mysql_pwd, mysql_db);
+    if (!conn) { printf("{\"code\":1,\"msg\":\"db error\"}\n"); cJSON_Delete(root); return -1; }
+    mysql_query(conn, "set names utf8mb4");
+
+    escaped_user = escape_mysql_text(conn, user_item->valuestring);
+    escaped_md5 = escape_mysql_text(conn, md5_item->valuestring);
+    if (!escaped_user || !escaped_md5) {
+        printf("{\"code\":1,\"msg\":\"db error\"}\n"); goto END;
+    }
+
+    {
+        char sql[1024] = {0};
+        snprintf(sql, sizeof(sql),
+                 "SELECT wp.title, wp.summary, wp.tags_json, wp.outline_json, "
+                 "ufl.file_name, fi.type "
+                 "FROM wiki_page wp "
+                 "JOIN user_file_list ufl ON ufl.user=wp.user AND ufl.md5=wp.md5 "
+                 "LEFT JOIN file_info fi ON fi.md5=wp.md5 "
+                 "WHERE wp.user='%s' AND wp.md5='%s' AND wp.status='active' LIMIT 1",
+                 escaped_user, escaped_md5);
+
+        if (mysql_query(conn, sql) == 0) {
+            MYSQL_RES *res = mysql_store_result(conn);
+            if (res) {
+                MYSQL_ROW row = mysql_fetch_row(res);
+                if (row) {
+                    cJSON *resp = cJSON_CreateObject();
+                    cJSON_AddNumberToObject(resp, "code", 0);
+                    cJSON *data = cJSON_CreateObject();
+                    cJSON_AddStringToObject(data, "title", row[0] ? row[0] : "");
+                    cJSON_AddStringToObject(data, "summary", row[1] ? row[1] : "");
+                    cJSON_AddStringToObject(data, "tags", row[2] ? row[2] : "[]");
+                    cJSON_AddStringToObject(data, "outline", row[3] ? row[3] : "[]");
+                    cJSON *source = cJSON_CreateObject();
+                    cJSON_AddStringToObject(source, "md5", md5_item->valuestring);
+                    cJSON_AddStringToObject(source, "filename", row[4] ? row[4] : "");
+                    cJSON_AddStringToObject(source, "type", row[5] ? row[5] : "");
+                    cJSON_AddItemToObject(data, "source", source);
+                    cJSON_AddItemToObject(resp, "data", data);
+
+                    /* 查询 wiki_link 获取此文件的概念链接 */
+                    char link_sql[1024] = {0};
+                    snprintf(link_sql, sizeof(link_sql),
+                             "SELECT dst_name FROM wiki_link WHERE user='%s' AND src_md5='%s'",
+                             escaped_user, escaped_md5);
+                    if (mysql_query(conn, link_sql) == 0) {
+                        MYSQL_RES *lres = mysql_store_result(conn);
+                        if (lres) {
+                            cJSON *links = cJSON_CreateArray();
+                            MYSQL_ROW lrow;
+                            while ((lrow = mysql_fetch_row(lres)) != NULL) {
+                                if (lrow[0]) cJSON_AddItemToArray(links, cJSON_CreateString(lrow[0]));
+                            }
+                            cJSON_AddItemToObject(data, "links", links);
+                            mysql_free_result(lres);
+                        }
+                    }
+
+                    char *resp_str = cJSON_PrintUnformatted(resp);
+                    if (resp_str) { printf("%s\n", resp_str); free(resp_str); }
+                    cJSON_Delete(resp);
+                    ret = 0;
+                } else {
+                    printf("{\"code\":1,\"msg\":\"wiki not found\"}\n");
+                }
+                mysql_free_result(res);
+            }
+        }
+    }
+
+END:
+    if (escaped_user) free(escaped_user);
+    if (escaped_md5) free(escaped_md5);
+    if (conn) mysql_close(conn);
+    if (root) cJSON_Delete(root);
+    return ret;
+}
+
+/**
+ * 处理 backlinks 请求：获取当前文件涉及概念的反向引用
+ * POST body: { "user": "xxx", "token": "xxx", "md5": "xxx" }
+ */
+static int handle_backlinks(char *post_data)
+{
+    int ret = -1;
+    MYSQL *conn = NULL;
+    cJSON *root = NULL;
+    char *escaped_user = NULL;
+    char *escaped_md5 = NULL;
+
+    root = cJSON_Parse(post_data);
+    if (!root) { printf("{\"code\":1,\"msg\":\"invalid json\"}\n"); return -1; }
+
+    cJSON *user_item = cJSON_GetObjectItem(root, "user");
+    cJSON *token_item = cJSON_GetObjectItem(root, "token");
+    cJSON *md5_item = cJSON_GetObjectItem(root, "md5");
+    if (!user_item || !token_item || !md5_item) {
+        printf("{\"code\":1,\"msg\":\"missing fields\"}\n");
+        cJSON_Delete(root); return -1;
+    }
+    if (verify_token(user_item->valuestring, token_item->valuestring) != 0) {
+        printf("{\"code\":4,\"msg\":\"token error\"}\n");
+        cJSON_Delete(root); return -1;
+    }
+
+    conn = msql_conn(mysql_user, mysql_pwd, mysql_db);
+    if (!conn) { printf("{\"code\":1,\"msg\":\"db error\"}\n"); cJSON_Delete(root); return -1; }
+    mysql_query(conn, "set names utf8mb4");
+
+    escaped_user = escape_mysql_text(conn, user_item->valuestring);
+    escaped_md5 = escape_mysql_text(conn, md5_item->valuestring);
+    if (!escaped_user || !escaped_md5) {
+        printf("{\"code\":1,\"msg\":\"db error\"}\n"); goto END;
+    }
+
+    {
+        /* 单条 JOIN 查所有概念及其反向引用 */
+        char sql[2048] = {0};
+        snprintf(sql, sizeof(sql),
+                 "SELECT wl.dst_name, wl2.src_md5, ufl.file_name "
+                 "FROM wiki_link wl "
+                 "JOIN wiki_link wl2 ON wl2.user=wl.user AND wl2.dst_name=wl.dst_name AND wl2.src_md5 != wl.src_md5 "
+                 "JOIN user_file_list ufl ON ufl.user=wl2.user AND ufl.md5=wl2.src_md5 "
+                 "WHERE wl.user='%s' AND wl.src_md5='%s' "
+                 "ORDER BY wl.dst_name "
+                 "LIMIT 50",
+                 escaped_user, escaped_md5);
+
+        if (mysql_query(conn, sql) == 0) {
+            MYSQL_RES *res = mysql_store_result(conn);
+            if (res) {
+                cJSON *resp = cJSON_CreateObject();
+                cJSON_AddNumberToObject(resp, "code", 0);
+                cJSON *data_arr = cJSON_CreateArray();
+                MYSQL_ROW row;
+
+                /* 按概念分组：dst_name 相同的行为同一概念 */
+                cJSON *cur_item = NULL;
+                cJSON *cur_refs = NULL;
+                char last_concept[256] = {0};
+
+                while ((row = mysql_fetch_row(res)) != NULL) {
+                    const char *concept = row[0] ? row[0] : "";
+                    if (strcmp(concept, last_concept) != 0) {
+                        /* 新概念：提交上一个，创建新的 */
+                        if (cur_item) {
+                            cJSON_AddItemToArray(data_arr, cur_item);
+                        }
+                        cur_item = cJSON_CreateObject();
+                        cJSON_AddStringToObject(cur_item, "concept", concept);
+                        cur_refs = cJSON_CreateArray();
+                        cJSON_AddItemToObject(cur_item, "referenced_by", cur_refs);
+                        strncpy(last_concept, concept, sizeof(last_concept) - 1);
+                    }
+                    if (cur_refs && row[1]) {
+                        cJSON *ref = cJSON_CreateObject();
+                        cJSON_AddStringToObject(ref, "md5", row[1]);
+                        cJSON_AddStringToObject(ref, "filename", row[2] ? row[2] : "");
+                        cJSON_AddItemToArray(cur_refs, ref);
+                    }
+                }
+                if (cur_item) {
+                    cJSON_AddItemToArray(data_arr, cur_item);
+                }
+
+                cJSON_AddItemToObject(resp, "data", data_arr);
+                char *resp_str = cJSON_PrintUnformatted(resp);
+                if (resp_str) { printf("%s\n", resp_str); free(resp_str); }
+                cJSON_Delete(resp);
+                ret = 0;
+                mysql_free_result(res);
+            }
+        }
+        if (ret != 0) {
+            printf("{\"code\":1,\"msg\":\"query failed\"}\n");
+        }
+    }
+
+END:
+    if (escaped_user) free(escaped_user);
+    if (escaped_md5) free(escaped_md5);
+    if (conn) mysql_close(conn);
+    if (root) cJSON_Delete(root);
+    return ret;
+}
+
+/**
+ * 处理 related 请求：获取相关文件推荐
+ * POST body: { "user": "xxx", "token": "xxx", "md5": "xxx" }
+ * 策略：标签重合 > 语义相似度（MVP 版只用标签重合）
+ */
+static int handle_related(char *post_data)
+{
+    int ret = -1;
+    MYSQL *conn = NULL;
+    cJSON *root = NULL;
+    char *escaped_user = NULL;
+    char *escaped_md5 = NULL;
+    int query_failed = 0;
+
+    root = cJSON_Parse(post_data);
+    if (!root) { printf("{\"code\":1,\"msg\":\"invalid json\"}\n"); return -1; }
+
+    cJSON *user_item = cJSON_GetObjectItem(root, "user");
+    cJSON *token_item = cJSON_GetObjectItem(root, "token");
+    cJSON *md5_item = cJSON_GetObjectItem(root, "md5");
+    if (!user_item || !token_item || !md5_item) {
+        printf("{\"code\":1,\"msg\":\"missing fields\"}\n");
+        cJSON_Delete(root); return -1;
+    }
+    if (verify_token(user_item->valuestring, token_item->valuestring) != 0) {
+        printf("{\"code\":4,\"msg\":\"token error\"}\n");
+        cJSON_Delete(root); return -1;
+    }
+
+    conn = msql_conn(mysql_user, mysql_pwd, mysql_db);
+    if (!conn) { printf("{\"code\":1,\"msg\":\"db error\"}\n"); cJSON_Delete(root); return -1; }
+    mysql_query(conn, "set names utf8mb4");
+
+    escaped_user = escape_mysql_text(conn, user_item->valuestring);
+    escaped_md5 = escape_mysql_text(conn, md5_item->valuestring);
+    if (!escaped_user || !escaped_md5) {
+        printf("{\"code\":1,\"msg\":\"db error\"}\n"); goto END;
+    }
+
+    {
+        cJSON *resp = cJSON_CreateObject();
+        cJSON_AddNumberToObject(resp, "code", 0);
+        cJSON *data_arr = cJSON_CreateArray();
+
+        /* 方法1：显式双链重合 — 共用同一概念的其它文件 */
+        char sql[2048] = {0};
+        snprintf(sql, sizeof(sql),
+                 "SELECT DISTINCT wl2.src_md5, ufl.file_name, wl.dst_name "
+                 "FROM wiki_link wl "
+                 "JOIN wiki_link wl2 ON wl2.user=wl.user AND wl2.dst_name=wl.dst_name AND wl2.src_md5!=wl.src_md5 "
+                 "JOIN user_file_list ufl ON ufl.user=wl2.user AND ufl.md5=wl2.src_md5 "
+                 "WHERE wl.user='%s' AND wl.src_md5='%s' "
+                 "LIMIT 3",
+                 escaped_user, escaped_md5);
+
+        if (mysql_query(conn, sql) != 0) {
+            query_failed = 1;
+            LOG(AI_LOG_MODULE, AI_LOG_PROC, "related concept query failed: %s\n", mysql_error(conn));
+        } else {
+            MYSQL_RES *res = mysql_store_result(conn);
+            if (!res) {
+                query_failed = 1;
+                LOG(AI_LOG_MODULE, AI_LOG_PROC, "related concept store result failed: %s\n", mysql_error(conn));
+            } else {
+                MYSQL_ROW row;
+                while ((row = mysql_fetch_row(res)) != NULL) {
+                    cJSON *item = cJSON_CreateObject();
+                    cJSON_AddStringToObject(item, "md5", row[0] ? row[0] : "");
+                    cJSON_AddStringToObject(item, "filename", row[1] ? row[1] : "");
+                    char reason[256] = {0};
+                    snprintf(reason, sizeof(reason), "共享概念：%s", row[2] ? row[2] : "");
+                    cJSON_AddStringToObject(item, "reason", reason);
+                    cJSON_AddItemToArray(data_arr, item);
+                }
+                mysql_free_result(res);
+            }
+        }
+
+        /* 如不足3条，补充标签重合 */
+        if (!query_failed && cJSON_GetArraySize(data_arr) < 3) {
+            char tag_sql[2048] = {0};
+            snprintf(tag_sql, sizeof(tag_sql),
+                     "SELECT uad2.md5, ufl.file_name, uad1.tags_json, uad2.tags_json FROM user_file_ai_desc uad1 "
+                     "JOIN user_file_ai_desc uad2 ON uad2.user=uad1.user AND uad2.md5!=uad1.md5 "
+                     "JOIN user_file_list ufl ON ufl.user=uad2.user AND ufl.md5=uad2.md5 "
+                     "WHERE uad1.user='%s' AND uad1.md5='%s' "
+                     "AND uad1.status=1 AND uad1.parse_status='success' "
+                     "AND uad2.status=1 AND uad2.parse_status='success' "
+                     "AND uad1.tags_json IS NOT NULL AND uad2.tags_json IS NOT NULL "
+                     "LIMIT 10",
+                     escaped_user, escaped_md5);
+            if (mysql_query(conn, tag_sql) != 0) {
+                query_failed = 1;
+                LOG(AI_LOG_MODULE, AI_LOG_PROC, "related tag query failed: %s\n", mysql_error(conn));
+            } else {
+                MYSQL_RES *res = mysql_store_result(conn);
+                if (!res) {
+                    query_failed = 1;
+                    LOG(AI_LOG_MODULE, AI_LOG_PROC, "related tag store result failed: %s\n", mysql_error(conn));
+                } else {
+                    MYSQL_ROW row;
+                    while ((row = mysql_fetch_row(res)) != NULL) {
+                        char reason[256] = {0};
+                        if (!row[0] || result_array_contains_md5(data_arr, row[0])) {
+                            continue;
+                        }
+                        if (build_shared_tags_reason(row[2], row[3], reason, sizeof(reason)) <= 0) {
+                            continue;
+                        }
+                        cJSON *item = cJSON_CreateObject();
+                        cJSON_AddStringToObject(item, "md5", row[0] ? row[0] : "");
+                        cJSON_AddStringToObject(item, "filename", row[1] ? row[1] : "");
+                        cJSON_AddStringToObject(item, "reason", reason);
+                        cJSON_AddItemToArray(data_arr, item);
+                        if (cJSON_GetArraySize(data_arr) >= 3) break;
+                    }
+                    mysql_free_result(res);
+                }
+            }
+        }
+
+        if (query_failed) {
+            cJSON_Delete(data_arr);
+            cJSON_Delete(resp);
+            printf("{\"code\":1,\"msg\":\"query failed\"}\n");
+            goto END;
+        }
+
+        cJSON_AddItemToObject(resp, "data", data_arr);
+        char *resp_str = cJSON_PrintUnformatted(resp);
+        if (resp_str) { printf("%s\n", resp_str); free(resp_str); }
+        cJSON_Delete(resp);
+        ret = 0;
+    }
+
+END:
+    if (escaped_user) free(escaped_user);
+    if (escaped_md5) free(escaped_md5);
+    if (conn) mysql_close(conn);
+    if (root) cJSON_Delete(root);
+    return ret;
+}
 static int handle_rebuild(char *post_data)
 {
     int ret = -1;
@@ -1677,6 +2366,18 @@ int main()
             handle_search(post_data);
         } else if (strcmp(cmd, "rebuild") == 0) {
             handle_rebuild(post_data);
+        } else if (strcmp(cmd, "get_apikey") == 0) {
+            handle_get_apikey(post_data);
+        } else if (strcmp(cmd, "set_apikey") == 0) {
+            handle_set_apikey(post_data);
+        } else if (strcmp(cmd, "file_card") == 0) {
+            handle_file_card(post_data);
+        } else if (strcmp(cmd, "wiki") == 0) {
+            handle_wiki(post_data);
+        } else if (strcmp(cmd, "backlinks") == 0) {
+            handle_backlinks(post_data);
+        } else if (strcmp(cmd, "related") == 0) {
+            handle_related(post_data);
         } else {
             printf("{\"code\":1,\"msg\":\"unknown cmd: %s\"}\n", cmd);
         }

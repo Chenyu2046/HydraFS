@@ -604,6 +604,19 @@ int del_file(char *user, char *md5, char *filename)
     {
         mark_user_index_dirty(user);
     }
+
+    /* 知识层清理：删除 Wiki 页面和双链关系 */
+    sprintf(sql_cmd, "delete from wiki_page where user = '%s' and md5 = '%s'", user, md5);
+    if (mysql_query(conn, sql_cmd) != 0)
+    {
+        LOG(DEALFILE_LOG_MODULE, DEALFILE_LOG_PROC, "%s 操作失败: %s\n", sql_cmd, mysql_error(conn));
+    }
+
+    sprintf(sql_cmd, "delete from wiki_link where user = '%s' and src_md5 = '%s'", user, md5);
+    if (mysql_query(conn, sql_cmd) != 0)
+    {
+        LOG(DEALFILE_LOG_MODULE, DEALFILE_LOG_PROC, "%s 操作失败: %s\n", sql_cmd, mysql_error(conn));
+    }
     
     //文件信息表(file_info)的文件引用计数count，减去1
     //查看该文件文件引用计数

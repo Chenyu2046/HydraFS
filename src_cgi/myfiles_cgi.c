@@ -308,18 +308,37 @@ int get_user_filelist(char *cmd, char *user, int start, int count)
     //多表指定行范围查询
     if (strcmp(cmd, "normal") == 0) //获取用户文件信息
     {
-        // sql语句
-        sprintf(sql_cmd, "select user_file_list.*, file_info.url, file_info.size, file_info.type from file_info, user_file_list where user = '%s' and file_info.md5 = user_file_list.md5 limit %d, %d", user, start, count);
+        // sql语句，LEFT JOIN 知识层表获取解析状态
+        sprintf(sql_cmd, "select user_file_list.*, file_info.url, file_info.size, file_info.type, "
+                "COALESCE(uad.parse_status, 'pending') as parse_status, "
+                "CASE WHEN wp.id IS NOT NULL THEN 1 ELSE 0 END as wiki_ready "
+                "from user_file_list "
+                "join file_info on file_info.md5 = user_file_list.md5 "
+                "left join user_file_ai_desc uad on uad.user = user_file_list.user and uad.md5 = user_file_list.md5 "
+                "left join wiki_page wp on wp.user = user_file_list.user and wp.md5 = user_file_list.md5 and wp.status = 'active' "
+                "where user_file_list.user = '%s' limit %d, %d", user, start, count);
     }
     else if (strcmp(cmd, "pvasc") == 0) //按下载量升序
     {
-        // sql语句
-        sprintf(sql_cmd, "select user_file_list.*, file_info.url, file_info.size, file_info.type from file_info, user_file_list where user = '%s' and file_info.md5 = user_file_list.md5  order by pv asc limit %d, %d", user, start, count);
+        sprintf(sql_cmd, "select user_file_list.*, file_info.url, file_info.size, file_info.type, "
+                "COALESCE(uad.parse_status, 'pending') as parse_status, "
+                "CASE WHEN wp.id IS NOT NULL THEN 1 ELSE 0 END as wiki_ready "
+                "from user_file_list "
+                "join file_info on file_info.md5 = user_file_list.md5 "
+                "left join user_file_ai_desc uad on uad.user = user_file_list.user and uad.md5 = user_file_list.md5 "
+                "left join wiki_page wp on wp.user = user_file_list.user and wp.md5 = user_file_list.md5 and wp.status = 'active' "
+                "where user_file_list.user = '%s' order by pv asc limit %d, %d", user, start, count);
     }
     else if (strcmp(cmd, "pvdesc") == 0) //按下载量降序
     {
-        // sql语句
-        sprintf(sql_cmd, "select user_file_list.*, file_info.url, file_info.size, file_info.type from file_info, user_file_list where user = '%s' and file_info.md5 = user_file_list.md5 order by pv desc limit %d, %d", user, start, count);
+        sprintf(sql_cmd, "select user_file_list.*, file_info.url, file_info.size, file_info.type, "
+                "COALESCE(uad.parse_status, 'pending') as parse_status, "
+                "CASE WHEN wp.id IS NOT NULL THEN 1 ELSE 0 END as wiki_ready "
+                "from user_file_list "
+                "join file_info on file_info.md5 = user_file_list.md5 "
+                "left join user_file_ai_desc uad on uad.user = user_file_list.user and uad.md5 = user_file_list.md5 "
+                "left join wiki_page wp on wp.user = user_file_list.user and wp.md5 = user_file_list.md5 and wp.status = 'active' "
+                "where user_file_list.user = '%s' order by pv desc limit %d, %d", user, start, count);
     }
 
     LOG(MYFILES_LOG_MODULE, MYFILES_LOG_PROC, "%s 在操作\n", sql_cmd);
@@ -443,6 +462,20 @@ int get_user_filelist(char *cmd, char *user, int start, int count)
         if (row[column_index] != NULL)
         {
             cJSON_AddStringToObject(item, "type", row[column_index]);
+        }
+
+        column_index++;
+        //-- parse_status 解析状态（pending/running/success/failed/skipped）
+        if (row[column_index] != NULL)
+        {
+            cJSON_AddStringToObject(item, "parse_status", row[column_index]);
+        }
+
+        column_index++;
+        //-- wiki_ready Wiki 页面是否就绪（1/0）
+        if (row[column_index] != NULL)
+        {
+            cJSON_AddNumberToObject(item, "wiki_ready", atoi(row[column_index]));
         }
 
         cJSON_AddItemToArray(array, item);

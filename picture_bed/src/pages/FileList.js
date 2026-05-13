@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Upload, Card, Row, Col, Table, message, Button, Tooltip, Space, Progress } from 'antd';
+import { Upload, Card, Row, Col, Table, message, Button, Tooltip, Space, Progress, Tag } from 'antd';
 import {
   UploadOutlined,
   ShareAltOutlined,
@@ -12,9 +12,14 @@ import {
   FileZipOutlined,
   FileTextOutlined,
   CheckCircleOutlined,
+  BookOutlined,
+  LoadingOutlined,
+  CloseCircleOutlined,
+  MinusCircleOutlined,
 } from '@ant-design/icons';
 import styled from '@emotion/styled';
 import { useAuth } from '../contexts/AuthContext';
+import { useNavigate } from 'react-router-dom';
 import { fetchUserImages, uploadImage, deleteImage, shareFile, cancelShareFile, pvFile } from '../services/images';
 import { describeFile } from '../services/ai';
 
@@ -43,6 +48,7 @@ const FileList = () => {
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const { user, logout } = useAuth();
+  const navigate = useNavigate();
   const uploadingRef = React.useRef(false);
 
   const fetchFiles = async () => {
@@ -173,6 +179,23 @@ const FileList = () => {
       render: (t) => (t || '').toUpperCase(),
     },
     {
+      title: '解析状态',
+      dataIndex: 'parse_status',
+      key: 'parse_status',
+      width: 110,
+      render: (status) => {
+        const statusMap = {
+          pending:   { color: 'default', icon: <MinusCircleOutlined />, text: '待处理' },
+          running:   { color: 'processing', icon: <LoadingOutlined />, text: '解析中' },
+          success:   { color: 'success', icon: <CheckCircleOutlined />, text: '已解析' },
+          failed:    { color: 'error', icon: <CloseCircleOutlined />, text: '失败' },
+          skipped:   { color: 'warning', icon: <MinusCircleOutlined />, text: '已跳过' },
+        };
+        const s = statusMap[status] || statusMap.pending;
+        return <Tag color={s.color} icon={s.icon}>{s.text}</Tag>;
+      },
+    },
+    {
       title: '大小',
       dataIndex: 'size',
       key: 'size',
@@ -217,6 +240,11 @@ const FileList = () => {
           <Tooltip title="删除">
             <Button type="text" danger icon={<DeleteOutlined />} onClick={() => handleDelete(record)} />
           </Tooltip>
+          {record.wiki_ready === 1 && (
+            <Tooltip title="查看 Wiki">
+              <Button type="text" icon={<BookOutlined />} onClick={() => navigate(`/wiki/${record.md5}`)} />
+            </Tooltip>
+          )}
         </Space>
       ),
     },

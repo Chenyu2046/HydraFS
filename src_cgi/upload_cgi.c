@@ -20,6 +20,7 @@
 #include "make_log.h" //日志头文件
 #include "cfg.h"
 #include "util_cgi.h" //cgi后台通用接口，trim_space(), memstr()
+#include "knowledge_task.h"
 
 #define UPLOAD_LOG_MODULE "cgi"
 #define UPLOAD_LOG_PROC   "upload"
@@ -1079,6 +1080,19 @@ int main()
                 {
                     unlink(filename);
                     LOG(UPLOAD_LOG_MODULE, UPLOAD_LOG_PROC, "reuse existing file for md5=%s\n", md5);
+
+                    /* 知识层：秒传/复用场景下补建任务 */
+                    if (dedupe_ret == 0) {
+                        MYSQL *task_conn = msql_conn(mysql_user, mysql_pwd, mysql_db);
+                        if (task_conn) {
+                            mysql_query(task_conn, "set names utf8");
+                            char suffix[SUFFIX_LEN] = {0};
+                            get_file_suffix(filename, suffix);
+                            enqueue_parse_task(task_conn, user, md5, suffix, "md5_hit");
+                            mysql_close(task_conn);
+                        }
+                    }
+
                     ret = HTTP_RESP_OK;
                     goto END;
                 }
@@ -1114,6 +1128,18 @@ int main()
             {
                 ret = HTTP_RESP_FAIL;
                 goto END;
+            }
+
+            /* === 知识层：创建异步解析任务 === */
+            {
+                MYSQL *task_conn = msql_conn(mysql_user, mysql_pwd, mysql_db);
+                if (task_conn) {
+                    mysql_query(task_conn, "set names utf8");
+                    char suffix[SUFFIX_LEN] = {0};
+                    get_file_suffix(filename, suffix);
+                    enqueue_parse_task(task_conn, user, md5, suffix, "upload");
+                    mysql_close(task_conn);
+                }
             }
 
 

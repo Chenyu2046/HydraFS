@@ -15,6 +15,7 @@
 #include "deal_mysql.h"
 #include "cfg.h"
 #include "cJSON.h"
+#include "knowledge_task.h"
 #include <sys/time.h>
 
 #define MD5_LOG_MODULE       "cgi"
@@ -248,6 +249,16 @@ int deal_md5(char *user, char *md5, char *filename)
             LOG(MD5_LOG_MODULE, MD5_LOG_PROC, "%s 操作失败： %s\n", sql_cmd, mysql_error(conn));
             ret = -1;
             goto END;
+        }
+
+        /* 知识层：秒传命中后创建异步解析任务 */
+        {
+            char suffix[32] = {0};
+            const char *dot = strrchr(filename, '.');
+            if (dot) {
+                strncpy(suffix, dot + 1, sizeof(suffix) - 1);
+            }
+            enqueue_parse_task(conn, user, md5, suffix, "md5_hit");
         }
 
     }

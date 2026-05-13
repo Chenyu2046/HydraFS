@@ -45,6 +45,7 @@ chunk_init=$(CGI_BIN_PATH)/chunk_init
 chunk_upload=$(CGI_BIN_PATH)/chunk_upload
 chunk_merge=$(CGI_BIN_PATH)/chunk_merge
 ai=$(CGI_BIN_PATH)/ai
+worker=$(CGI_BIN_PATH)/knowledge_worker
 
 # 最终目标
 target=$(login)		\
@@ -59,7 +60,8 @@ target=$(login)		\
 	   $(chunk_init) \
 	   $(chunk_upload) \
 	   $(chunk_merge) \
-	   $(ai)
+	   $(ai) \
+	   $(worker)
 ALL:$(target)
 
 #######################################################################
@@ -105,7 +107,8 @@ $(md5):		$(CGI_SRC_PATH)/md5_cgi.o \
 			$(COMMON_PATH)/cJSON.o \
 			$(COMMON_PATH)/deal_mysql.o \
 			$(COMMON_PATH)/redis_op.o  \
-			$(COMMON_PATH)/cfg.o
+			$(COMMON_PATH)/cfg.o \
+			$(COMMON_PATH)/knowledge_task.o
 	$(CC) $^ -o $@ $(LIBS)
 # 上传
 $(upload):$(CGI_SRC_PATH)/upload_cgi.o \
@@ -114,7 +117,8 @@ $(upload):$(CGI_SRC_PATH)/upload_cgi.o \
 		  $(COMMON_PATH)/cJSON.o \
 		  $(COMMON_PATH)/deal_mysql.o \
 		  $(COMMON_PATH)/redis_op.o  \
-		  $(COMMON_PATH)/cfg.o
+		  $(COMMON_PATH)/cfg.o \
+		  $(COMMON_PATH)/knowledge_task.o
 	$(CC) $^ -o $@ $(LIBS)
 # 用户列表展示
 $(myfiles):	$(CGI_SRC_PATH)/myfiles_cgi.o \
@@ -209,6 +213,20 @@ $(ai): $(CGI_SRC_PATH)/ai_cgi.o \
 	   $(COMMON_PATH)/cJSON.o \
 	   $(COMMON_PATH)/deal_mysql.o \
 	   $(COMMON_PATH)/redis_op.o \
+	   $(COMMON_PATH)/cfg.o \
+	   $(COMMON_PATH)/md5.o
+	$(CXX) $^ -o $@ $(LIBS) $(AI_LIBS)
+
+# knowledge_worker（非 FastCGI 后台进程，不需要 -lfcgi）
+$(CGI_SRC_PATH)/knowledge_worker.o: $(CGI_SRC_PATH)/knowledge_worker.cpp
+	$(CXX) -c $< -o $@ $(CXXFLAGS) $(CPPLFAGS)
+
+$(worker): $(CGI_SRC_PATH)/knowledge_worker.o \
+	   $(CGI_SRC_PATH)/dashscope_api.o \
+	   $(CGI_SRC_PATH)/faiss_wrapper.o \
+	   $(COMMON_PATH)/make_log.o \
+	   $(COMMON_PATH)/cJSON.o \
+	   $(COMMON_PATH)/deal_mysql.o \
 	   $(COMMON_PATH)/cfg.o \
 	   $(COMMON_PATH)/md5.o
 	$(CXX) $^ -o $@ $(LIBS) $(AI_LIBS)

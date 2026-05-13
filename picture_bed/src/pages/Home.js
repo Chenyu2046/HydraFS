@@ -6,7 +6,8 @@ import {
   DownloadOutlined,
   ShareAltOutlined,
   DeleteOutlined,
-  SearchOutlined
+  SearchOutlined,
+  BookOutlined
 } from '@ant-design/icons';
 import styled from '@emotion/styled';
 import { useAuth } from '../contexts/AuthContext';
@@ -305,7 +306,7 @@ const Home = () => {
             )}
           </div>
           <div style={{ color: '#888', fontSize: 12, marginTop: 4 }}>
-            API Key 仅保存在浏览器本地，不会上传到服务器存储。用于调用阿里百炼 AI 服务生成文件描述和语义搜索。
+            API Key 会保存到当前账号，浏览器本地只保留一份同步缓存。用于调用阿里百炼 AI 服务生成文件描述、语义搜索和异步知识解析。
           </div>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
@@ -350,6 +351,11 @@ const Home = () => {
                     <div style={{ flex: 1 }}>
                       <div style={{ fontWeight: 500 }}>{item.filename}</div>
                       <div style={{ color: '#888', fontSize: 12, marginTop: 4 }}>{item.description}</div>
+                      {item.reason && (
+                        <div style={{ color: '#1677ff', fontSize: 12, marginTop: 2 }}>
+                          {item.reason}
+                        </div>
+                      )}
                     </div>
                     <Tag color={item.score >= 0.6 ? 'green' : item.score >= 0.4 ? 'blue' : 'orange'} style={{ marginLeft: 12 }}>
                       相似度 {(Math.max(0, item.score) * 100).toFixed(1)}%
@@ -357,6 +363,13 @@ const Home = () => {
                     {item.url && (
                       <Button type="link" icon={<DownloadOutlined />} href={item.url} target="_blank" download={item.filename}>
                         下载
+                      </Button>
+                    )}
+                    {item.wiki_ready === 1 && (
+                      <Button type="link" icon={<BookOutlined />}
+                        onClick={() => navigate(`/wiki/${item.md5}`)}
+                        title="查看 Wiki">
+                        Wiki
                       </Button>
                     )}
                   </div>

@@ -83,7 +83,7 @@ CREATE TABLE `user_info` (
   UNIQUE KEY `uq_user_name` (`user_name`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8 COMMENT='用户信息表';
 
--- AI 文件描述表（用于向量检索）
+-- AI 文件描述表（用于向量检索·全局缓存，按 md5 去重）
 CREATE TABLE IF NOT EXISTS `file_ai_desc` (
   `id` bigint NOT NULL AUTO_INCREMENT,
   `md5` varchar(256) NOT NULL COMMENT '对应 file_info.md5',
@@ -93,9 +93,41 @@ CREATE TABLE IF NOT EXISTS `file_ai_desc` (
   `model` varchar(64) DEFAULT '' COMMENT '使用的模型名',
   `status` tinyint DEFAULT 0 COMMENT '0=待处理 1=完成 2=失败',
   `create_time` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+  `summary` text DEFAULT NULL COMMENT 'AI 生成的摘要（100-300 字）',
+  `tags_json` text DEFAULT NULL COMMENT '标签 JSON 数组，如 ["FastDFS","分布式存储"]',
+  `outline_json` longtext DEFAULT NULL COMMENT '内容大纲 JSON 数组',
+  `parser_version` varchar(32) DEFAULT 'v1' COMMENT '解析器版本',
+  `updated_at` datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '最后更新时间',
   PRIMARY KEY (`id`),
   UNIQUE KEY `uq_md5` (`md5`(191))
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='AI文件描述与向量表';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='AI文件描述与向量表（全局缓存）';
+
+-- 存量数据库兼容：为 file_ai_desc 补充知识层字段
+-- 使用存储过程安全添加列（列已存在时跳过，不报错）
+DELIMITER //
+CREATE PROCEDURE safe_add_column(
+    IN tbl VARCHAR(128),
+    IN col VARCHAR(128),
+    IN col_def TEXT
+)
+BEGIN
+    DECLARE cnt INT DEFAULT 0;
+    SELECT COUNT(*) INTO cnt FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = 'yuncunchu' AND TABLE_NAME = tbl AND COLUMN_NAME = col;
+    IF cnt = 0 THEN
+        SET @ddl = CONCAT('ALTER TABLE ', tbl, ' ADD COLUMN ', col_def);
+        PREPARE stmt FROM @ddl;
+        EXECUTE stmt;
+        DEALLOCATE PREPARE stmt;
+    END IF;
+END //
+DELIMITER ;
+
+CALL safe_add_column('file_ai_desc', 'summary', 'text DEFAULT NULL COMMENT ''AI 生成的摘要（100-300 字）''');
+CALL safe_add_column('file_ai_desc', 'tags_json', 'text DEFAULT NULL COMMENT ''标签 JSON 数组''');
+CALL safe_add_column('file_ai_desc', 'outline_json', 'longtext DEFAULT NULL COMMENT ''内容大纲 JSON 数组''');
+CALL safe_add_column('file_ai_desc', 'parser_version', 'varchar(32) DEFAULT ''v1'' COMMENT ''解析器版本''');
+CALL safe_add_column('file_ai_desc', 'updated_at', 'datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT ''最后更新时间''');
 
 CREATE TABLE IF NOT EXISTS `user_file_ai_desc` (
   `id` bigint NOT NULL AUTO_INCREMENT,
@@ -108,8 +140,77 @@ CREATE TABLE IF NOT EXISTS `user_file_ai_desc` (
   `model` varchar(64) DEFAULT '' COMMENT '使用的模型名',
   `status` tinyint DEFAULT 0 COMMENT '0=待处理 1=完成 2=失败',
   `create_time` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
+  `summary` text DEFAULT NULL COMMENT 'AI 生成的摘要',
+  `tags_json` text DEFAULT NULL COMMENT '标签 JSON 数组',
+  `parse_status` varchar(32) DEFAULT 'pending' COMMENT '解析状态：pending/running/success/failed/skipped',
+  `error_msg` text DEFAULT NULL COMMENT '解析失败原因',
+  `updated_at` datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '最后更新时间',
   PRIMARY KEY (`id`),
   UNIQUE KEY `uq_user_md5` (`user`, `md5`(191)),
   KEY `idx_user_status` (`user`, `status`),
   KEY `idx_user_faiss` (`user`, `faiss_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='用户级AI文件描述与向量表';
+
+-- 存量数据库兼容：为 user_file_ai_desc 补充知识层字段
+CALL safe_add_column('user_file_ai_desc', 'summary', 'text DEFAULT NULL COMMENT ''AI 生成的摘要''');
+CALL safe_add_column('user_file_ai_desc', 'tags_json', 'text DEFAULT NULL COMMENT ''标签 JSON 数组''');
+CALL safe_add_column('user_file_ai_desc', 'parse_status', 'varchar(32) DEFAULT ''pending'' COMMENT ''解析状态：pending/running/success/failed/skipped''');
+CALL safe_add_column('user_file_ai_desc', 'error_msg', 'text DEFAULT NULL COMMENT ''解析失败原因''');
+CALL safe_add_column('user_file_ai_desc', 'updated_at', 'datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT ''最后更新时间''');
+
+DROP PROCEDURE IF EXISTS safe_add_column;
+
+-- =============================================
+-- 知识层新增表（双链知识云存储 MVP）
+-- =============================================
+
+-- 异步解析任务表
+CREATE TABLE IF NOT EXISTS `ai_parse_task` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `user` varchar(32) NOT NULL,
+  `md5` varchar(256) NOT NULL,
+  `task_type` varchar(32) NOT NULL DEFAULT 'parse_file' COMMENT '任务类型：parse_file',
+  `source` varchar(32) NOT NULL DEFAULT 'upload' COMMENT '触发来源：upload/md5_hit',
+  `status` varchar(32) NOT NULL DEFAULT 'pending' COMMENT 'pending/running/success/failed/skipped',
+  `retry_count` int NOT NULL DEFAULT 0 COMMENT '已重试次数',
+  `error_msg` text DEFAULT NULL COMMENT '失败原因',
+  `worker_id` varchar(64) DEFAULT NULL COMMENT '执行 worker 标识',
+  `created_at` datetime DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_user_status` (`user`, `status`),
+  KEY `idx_md5_status` (`md5`(191), `status`),
+  KEY `idx_status_created` (`status`, `created_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='AI 解析任务队列';
+
+-- 文件级 Wiki 页面表（用户私有）
+CREATE TABLE IF NOT EXISTS `wiki_page` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `user` varchar(32) NOT NULL,
+  `md5` varchar(256) NOT NULL,
+  `title` varchar(255) NOT NULL COMMENT 'Wiki 标题',
+  `summary` text DEFAULT NULL COMMENT 'AI 摘要',
+  `tags_json` text DEFAULT NULL COMMENT '标签 JSON 数组',
+  `outline_json` longtext DEFAULT NULL COMMENT '内容大纲 JSON 数组',
+  `status` varchar(32) NOT NULL DEFAULT 'active' COMMENT 'active/deleted',
+  `created_at` datetime DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_user_md5` (`user`, `md5`(191)),
+  KEY `idx_user_status` (`user`, `status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='用户文件级 Wiki 页面';
+
+-- 显式双链关系表（用户私有）
+CREATE TABLE IF NOT EXISTS `wiki_link` (
+  `id` bigint NOT NULL AUTO_INCREMENT,
+  `user` varchar(32) NOT NULL,
+  `src_md5` varchar(256) NOT NULL COMMENT '源文件 MD5',
+  `dst_name` varchar(255) NOT NULL COMMENT '目标概念名',
+  `link_type` varchar(32) NOT NULL DEFAULT 'explicit' COMMENT '链接类型：explicit',
+  `anchor_text` varchar(255) DEFAULT NULL COMMENT '锚文本',
+  `created_at` datetime DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_user_src_dst_type` (`user`, `src_md5`(191), `dst_name`, `link_type`),
+  KEY `idx_user_dst` (`user`, `dst_name`),
+  KEY `idx_user_src` (`user`, `src_md5`(191))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Wiki 显式双链关系表';
