@@ -1,6 +1,7 @@
+import React from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
-import { Layout } from 'antd';
 import styled from '@emotion/styled';
+import { Layout } from 'antd';
 import Login from './pages/Login';
 import Home from './pages/Home';
 import ImageList from './pages/ImageList';
@@ -13,15 +14,19 @@ import { AuthProvider, useAuth } from './contexts/AuthContext';
 
 const { Content } = Layout;
 
-const StyledLayout = styled(Layout)`
+const AppContainer = styled.div`
   min-height: 100vh;
-  background: #F8FAFC;
+  display: flex;
+  flex-direction: column;
+  background: #F5F5F7;
 `;
 
-const PageContent = styled(Content)`
-  max-width: 1280px;
+const MainContent = styled(Content)`
+  flex: 1;
+  width: 100%;
+  max-width: 1200px;
   margin: 0 auto;
-  padding: 24px 32px;
+  padding: 40px 24px;
 `;
 
 const PrivateRoute = ({ children }) => {
@@ -33,11 +38,11 @@ function AppRoutes() {
   const { user } = useAuth();
 
   return (
-    <StyledLayout>
+    <AppContainer>
       {user && <NavBar />}
-      <PageContent>
+      <MainContent>
         <Routes>
-          <Route path="/login" element={user ? <Navigate to="/" replace /> : <Login />} />
+          <Route path="/login" element={!user ? <Login /> : <Navigate to="/" replace />} />
           <Route path="/" element={<PrivateRoute><Home /></PrivateRoute>} />
           <Route path="/images" element={<PrivateRoute><ImageList /></PrivateRoute>} />
           <Route path="/files" element={<PrivateRoute><FileList /></PrivateRoute>} />
@@ -45,8 +50,8 @@ function AppRoutes() {
           <Route path="/top-downloads" element={<PrivateRoute><TopDownloads /></PrivateRoute>} />
           <Route path="/wiki/:md5" element={<PrivateRoute><WikiDetail /></PrivateRoute>} />
         </Routes>
-      </PageContent>
-    </StyledLayout>
+      </MainContent>
+    </AppContainer>
   );
 }
 

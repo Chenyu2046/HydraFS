@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { Upload, Card, Row, Col, Modal, message, Tooltip, Progress } from 'antd';
-import { PlusOutlined, ShareAltOutlined, DeleteOutlined, DownloadOutlined, CheckCircleOutlined } from '@ant-design/icons';
+import { Upload, Card, Row, Col, Modal, message, Tooltip, Progress, Segmented } from 'antd';
+import { PlusOutlined, ShareAltOutlined, DeleteOutlined, DownloadOutlined, CheckCircleOutlined, PictureOutlined, AppstoreOutlined } from '@ant-design/icons';
 import styled from '@emotion/styled';
 import { useAuth } from '../contexts/AuthContext';
 import { fetchUserImages, uploadImage, deleteImage, shareFile, cancelShareFile, pvFile } from '../services/images';
@@ -8,29 +8,44 @@ import { describeFile } from '../services/ai';
 
 const PageHeader = styled.div`
   margin-bottom: 24px;
-  h1 { font-size: 22px; font-weight: 700; color: #0F172A; margin: 0 0 4px; letter-spacing: -0.3px; }
-  p { font-size: 14px; color: #64748B; margin: 0; }
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  
+  .title-area {
+    h1 { font-size: 28px; font-weight: 700; color: #1D1D1F; margin: 0 0 6px; letter-spacing: -0.5px; }                                                                        p { font-size: 15px; color: #86868B; margin: 0; }
+  }
 `;
 
 const UploadCard = styled(Card)`
-  border-radius: 14px;
+  border-radius: 20px;
   border: 2px dashed #E2E8F0;
-  background: #FAFBFC;
-  transition: border-color 0.2s, background 0.2s;
+  background: #ffffff;
+  height: 100%;
+  transition: all 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
 
   &:hover {
-    border-color: #2563EB;
-    background: #F8FAFF;
+    border-color: #007AFF;
+    background: #F5F5F7;
+    transform: translateY(-2px);
   }
 
   .ant-card-body {
-    padding: 20px;
+    padding: 24px;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .ant-upload-wrapper {
+    height: 100%;
   }
 
   .ant-upload-drag {
-    border: none;
-    background: transparent;
-    height: 200px;
+    border: none !important;
+    background: transparent !important;
+    height: 100% !important;
+    min-height: 220px;
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -39,40 +54,48 @@ const UploadCard = styled(Card)`
 
   .ant-upload-drag-icon {
     font-size: 32px;
-    color: #2563EB;
-    margin-bottom: 8px;
+    color: #007AFF;
+    margin-bottom: 12px;
   }
 
   .ant-upload-text {
     font-size: 14px;
-    font-weight: 500;
-    color: #475569;
+    font-weight: 600;
+    color: #1D1D1F;
+  }
+  
+  .ant-upload-hint {
+    font-size: 12px;
+    color: #86868B;
+    margin-top: 4px;
   }
 `;
 
 const ImageCard = styled(Card)`
-  border-radius: 12px;
-  border: 1px solid #E2E8F0;
+  border-radius: 20px;
+  border: none;
+  background: #ffffff;
   overflow: hidden;
-  transition: box-shadow 0.2s ease;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.04);
+  transition: all 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
 
   &:hover {
-    box-shadow: 0 4px 16px rgba(0,0,0,0.08);
+    box-shadow: 0 12px 32px rgba(0,0,0,0.08);
+    transform: translateY(-4px);
   }
 
   .ant-card-cover {
-    height: 180px;
-    background: #F8FAFC;
-    display: flex;
-    align-items: center;
-    justify-content: center;
+    height: 200px;
+    background: #F5F5F7;
+    position: relative;
+    overflow: hidden;
     cursor: pointer;
 
     img {
-      max-width: 100%;
-      max-height: 100%;
-      object-fit: contain;
-      transition: transform 0.2s ease;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      transition: transform 0.3s ease;
     }
 
     &:hover img {
@@ -81,35 +104,38 @@ const ImageCard = styled(Card)`
   }
 
   .ant-card-body {
-    padding: 14px 16px;
+    padding: 16px 20px;
   }
 
   .ant-card-meta-title {
-    font-size: 13.5px;
+    font-size: 14px;
     font-weight: 600;
-    color: #0F172A;
-    margin-bottom: 2px !important;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    color: #1D1D1F;
+    margin-bottom: 4px !important;
   }
 
   .ant-card-meta-description {
     font-size: 12px;
-    color: #94A3B8;
+    color: #86868B;
   }
 
   .ant-card-actions {
-    border-top: 1px solid #F1F5F9;
-    background: #FAFBFC;
+    border-top: 1px solid #F5F5F7;
+    padding: 8px 0;
+    
+    > li {
+      margin: 0;
+    }
 
     > li > span {
-      color: #64748B;
+      color: #86868B;
       font-size: 16px;
-      cursor: pointer;
-      transition: color 0.15s;
-
-      &:hover { color: #2563EB; }
+      transition: all 0.2s ease;
+      
+      &:hover {
+        color: #007AFF;
+        transform: scale(1.1);
+      }
     }
   }
 `;
@@ -198,11 +224,13 @@ const ImageList = () => {
   return (
     <div>
       <PageHeader>
-        <h1>图片</h1>
-        <p>上传与管理图片文件</p>
+        <div className="title-area">
+          <h1>图片</h1>
+          <p>上传与管理图片文件</p>
+        </div>
       </PageHeader>
 
-      <Row gutter={[16, 16]}>
+      <Row gutter={[20, 20]} align="stretch">
         <Col xs={24} sm={12} md={8} lg={6}>
           <UploadCard>
             <Upload.Dragger
@@ -212,32 +240,28 @@ const ImageList = () => {
               beforeUpload={(file) => { handleUpload(file); return false; }}
             >
               <p className="ant-upload-drag-icon"><PlusOutlined /></p>
-              <p className="ant-upload-text">点击或拖拽上传图片</p>
+              <p className="ant-upload-text">点击或拖拽上传</p>
+              <p className="ant-upload-hint">支持 JPG, PNG 等常用格式</p>
             </Upload.Dragger>
-            {uploading && <Progress percent={uploadProgress} status="active" style={{ marginTop: 12 }} strokeColor="#2563EB" />}
-          </UploadCard>
+            {uploading && <Progress percent={uploadProgress} status="active" style={{ marginTop: 16 }} strokeColor="#007AFF" />}                                                      </UploadCard>
         </Col>
         {images.map(image => (
-          <Col xs={24} sm={12} md={8} lg={6} key={image.id}>
+          <Col xs={24} sm={12} md={8} lg={6} key={image.md5 || image.id}>
             <ImageCard
               cover={<img alt={image.name} src={image.url} onClick={() => handlePreview(image)} />}
               actions={[
                 image.share_status === 1
-                  ? <Tooltip title="已分享（点击取消）"><CheckCircleOutlined style={{ color: '#059669' }} onClick={() => handleCancelShare(image)} /></Tooltip>
-                  : <Tooltip title="分享"><ShareAltOutlined onClick={() => handleShare(image)} /></Tooltip>,
-                <Tooltip title="下载"><DownloadOutlined onClick={() => handleDownload(image)} /></Tooltip>,
-                <Tooltip title="删除"><DeleteOutlined onClick={() => handleDelete(image)} /></Tooltip>,
-              ]}
+                  ? <Tooltip title="已分享（点击取消）"><CheckCircleOutlined style={{ color: '#34C759' }} onClick={() => handleCancelShare(image)} /></Tooltip>                               : <Tooltip title="分享"><ShareAltOutlined onClick={() => handleShare(image)} /></Tooltip>,                                                                                <Tooltip title="下载"><DownloadOutlined onClick={() => handleDownload(image)} /></Tooltip>,                                                                                 <Tooltip title="删除"><DeleteOutlined onClick={() => handleDelete(image)} style={{ color: '#FF3B30' }} /></Tooltip>,                                                      ]}
             >
-              <Card.Meta title={image.name} description={`${image.pv || 0} 次下载`} />
+              <Card.Meta 
+                title={image.name} 
+                description={`${image.pv || 0} 次查看 · ${new Date(image.create_time).toLocaleDateString()}`}                                                                               />
             </ImageCard>
           </Col>
         ))}
       </Row>
 
-      <Modal open={previewVisible} title={previewTitle} footer={null} onCancel={() => setPreviewVisible(false)} width="auto" style={{ maxWidth: '90vw' }}>
-        <img alt={previewTitle} style={{ maxWidth: '100%', maxHeight: '80vh' }} src={previewImage} />
-      </Modal>
+      <Modal open={previewVisible} title={null} footer={null} onCancel={() => setPreviewVisible(false)} width="auto" style={{ maxWidth: '90vw' }} centered>                         <img alt={previewTitle} style={{ maxWidth: '100%', maxHeight: '85vh', display: 'block', margin: '0 auto', borderRadius: '8px' }} src={previewImage} />                    </Modal>
     </div>
   );
 };

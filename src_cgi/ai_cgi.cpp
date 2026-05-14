@@ -32,6 +32,83 @@ extern "C" {
 #include "dashscope_api.h"
 #include "faiss_wrapper.h"
 
+// 前置声明
+static char *escape_mysql_text(MYSQL *conn, const char *input);
+
+/*
+ * 获取用户配置
+ */
+int get_user_ai_config(MYSQL *conn, const char *user, char *api_key, char *model, size_t key_len, size_t model_len)
+{
+    char *escaped_user = escape_mysql_text(conn, user);
+    if (!escaped_user) return -1;
+
+    char sql[512] = {0};
+    snprintf(sql, sizeof(sql),
+             "SELECT api_key, default_model FROM user_info WHERE user_name='%s' LIMIT 1",
+             escaped_user);
+
+    free(escaped_user);
+
+    if (mysql_query(conn, sql) != 0) return -1;
+    MYSQL_RES *res = mysql_store_result(conn);
+    if (!res) return -1;
+
+    int ret = -1;
+    MYSQL_ROW row = mysql_fetch_row(res);
+    if (row) {
+        if (row[0]) {
+            strncpy(api_key, row[0], key_len - 1);
+            api_key[key_len - 1] = '\0';
+        } else {
+            api_key[0] = '\0';
+        }
+        if (row[1]) {
+            strncpy(model, row[1], model_len - 1);
+            model[model_len - 1] = '\0';
+        } else {
+            model[0] = '\0';
+        }
+        ret = 0;
+    }
+
+    mysql_free_result(res);
+    return ret;
+}
+
+/**
+ * @brief  AI 智能检索 FastCGI 程序
+ *         功能：describe（生成文件描述+向量）、search（语义搜索）、rebuild（重建索引）
+ */
+
+#include "fcgi_config.h"
+#include "fcgi_stdio.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <curl/curl.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <sys/file.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
+
+extern "C" {
+#include "make_log.h"
+#include "util_cgi.h"
+#include "deal_mysql.h"
+#include "redis_keys.h"
+#include "redis_op.h"
+#include "cfg.h"
+#include "cJSON.h"
+#include "md5.h"
+#include "knowledge_task.h"
+}
+
+#include "dashscope_api.h"
+#include "faiss_wrapper.h"
+
 #define AI_LOG_MODULE "cgi"
 #define AI_LOG_PROC   "ai"
 

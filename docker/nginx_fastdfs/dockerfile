@@ -69,8 +69,8 @@ RUN mkdir -p /etc/nginx/ssl && \
         -newkey rsa:2048 \
         -keyout /etc/nginx/ssl/server.key \
         -out /etc/nginx/ssl/server.crt \
-        -subj "/C=CN/ST=Beijing/L=Beijing/O=YunCunChu/CN=xxx.xx.xx.xx" \
-        -addext "subjectAltName=IP:xxx.xx.xx.xx"
+        -subj "/C=CN/ST=Beijing/L=Beijing/O=YunCunChu/CN=43.138.155.193" \
+        -addext "subjectAltName=IP:43.138.155.193"
 
 # 复制 FastDFS 配置模板
 RUN cp /etc/fdfs/tracker.conf.sample /etc/fdfs/tracker.conf && \

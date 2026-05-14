@@ -1,3 +1,6 @@
+#include "util_cgi.h"
+#include "dashscope_api.h"
+#include "faiss_wrapper.h"
 /**
  * @file knowledge_worker.cpp
  * @brief 知识层异步解析 worker（常驻后台进程，非 FastCGI）
@@ -33,11 +36,11 @@ extern "C" {
 #include "deal_mysql.h"
 }
 
-#include "dashscope_api.h"
-#include "faiss_wrapper.h"
+// 前置声明
+static char *escape_mysql_text(MYSQL *conn, const char *input);
 
-#define WORKER_LOG_MODULE "worker"
-#define WORKER_LOG_PROC   "knowledge"
+#define KUTIL_LOG_PROC       "cgi"
+#define KUTIL_LOG_PROC         "knowledge_worker"
 
 /* 全局配置 */
 static char mysql_user[128] = {0};
@@ -57,7 +60,7 @@ static int g_running = 1;
 static void handle_signal(int sig)
 {
     if (sig == SIGTERM || sig == SIGINT) {
-        LOG(WORKER_LOG_MODULE, WORKER_LOG_PROC,
+        LOG(UTIL_LOG_MODULE, UTIL_LOG_PROC,
             "received signal %d, shutting down gracefully\n", sig);
         g_running = 0;
     }
@@ -76,7 +79,7 @@ static void read_cfg()
     get_cfg_value(CFG_PATH, "web_server", "ip", web_server_ip);
     get_cfg_value(CFG_PATH, "web_server", "port", web_server_port);
     get_cfg_value(CFG_PATH, "dashscope", "api_key", dashscope_api_key);
-    LOG(WORKER_LOG_MODULE, WORKER_LOG_PROC,
+    LOG(UTIL_LOG_MODULE, UTIL_LOG_PROC,
         "config loaded: mysql=%s, dim=%d, web=%s:%s\n",
         mysql_db, embedding_dimension, web_server_ip, web_server_port);
 }
@@ -344,15 +347,18 @@ static void make_summary(const char *text, char *summary, int max_len)
 }
 
 /* 写全局缓存 file_ai_desc */
-static int write_global_cache(MYSQL *conn, const char *md5, const char *desc,
-                              const float *vec, const char *summary,
-                              const char *tags_json, const char *model)
+static int write_global_cache(MYSQL *conn, const char *md5, const char *desc, 
+                              const float *vec, const char *summary, 
+                              const char *tags, const char *model) 
 {
-    char *esc_md5 = escape_mysql(conn, md5);
-    char *esc_desc = escape_mysql(conn, desc);
-    char *esc_model = escape_mysql(conn, model);
-    char *esc_summary = escape_mysql(conn, summary);
-    char *esc_tags = escape_mysql(conn, tags_json);
+    char sql[4096] = {0};
+    int ret = 0;
+    
+    char *esc_md5 = escape_mysql_text(conn, md5);
+    char *esc_desc = escape_mysql_text(conn, desc);
+    char *esc_model = escape_mysql_text(conn, model);
+    char *esc_summary = escape_mysql_text(conn, summary);
+    char *esc_tags = escape_mysql_text(conn, tags);
     char *esc_blob = NULL;
     if (!esc_md5 || !esc_desc || !esc_model || !esc_summary || !esc_tags) goto fail;
 
@@ -362,23 +368,14 @@ static int write_global_cache(MYSQL *conn, const char *md5, const char *desc,
         if (!esc_blob) goto fail;
     }
 
-    char sql[4096] = {0};
-    if (esc_blob) {
-        snprintf(sql, sizeof(sql),
-                 "REPLACE INTO file_ai_desc (md5, description, embedding, faiss_id, model, status, summary, tags_json, parser_version) "
-                 "VALUES ('%s','%s','%s',-1,'%s',1,'%s','%s','v1')",
-                 esc_md5, esc_desc, esc_blob, esc_model, esc_summary, esc_tags);
-    } else {
-        snprintf(sql, sizeof(sql),
-                 "REPLACE INTO file_ai_desc (md5, description, faiss_id, model, status, summary, tags_json, parser_version) "
-                 "VALUES ('%s','%s',-1,'%s',2,'%s','%s','v1')",
-                 esc_md5, esc_desc, esc_model, esc_summary, esc_tags);
-    }
-    int ret = mysql_query(conn, sql) == 0 ? 0 : -1;
-    free(esc_md5); free(esc_desc); free(esc_model);
-    free(esc_summary); free(esc_tags);
-    if (esc_blob) free(esc_blob);
-    return ret;
+    snprintf(sql, sizeof(sql), 
+             "insert into global_ai_cache (md5, description, embedding, summary, outline_json) "
+             "values ('%s', '%s', '%s', '%s', '%s') "
+             "on duplicate key update description=values(description), "
+             "embedding=values(embedding), summary=values(summary), outline_json=values(outline_json)",
+             md5, esc_desc, esc_blob, esc_summary, esc_tags);
+             
+    ret = mysql_query(conn, sql) == 0 ? 0 : -1;
 
 fail:
     if (esc_md5) free(esc_md5);
@@ -387,22 +384,24 @@ fail:
     if (esc_summary) free(esc_summary);
     if (esc_tags) free(esc_tags);
     if (esc_blob) free(esc_blob);
-    return -1;
+    return ret;
 }
 
 /* 写用户私有记录 user_file_ai_desc + 更新 parse_status */
-static int write_user_ai_record(MYSQL *conn, const char *user, const char *md5,
-                                const char *desc, const float *vec,
-                                const char *summary, const char *tags_json,
-                                const char *model, const char *parse_status)
+static int write_user_ai_record(MYSQL *conn, const char *user, const char *md5, 
+                                const char *desc, const float *vec, 
+                                const char *summary, const char *tags, const char *status, const char *model) 
 {
-    char *esc_user = escape_mysql(conn, user);
-    char *esc_md5 = escape_mysql(conn, md5);
-    char *esc_desc = escape_mysql(conn, desc);
-    char *esc_model = escape_mysql(conn, model);
-    char *esc_summary = escape_mysql(conn, summary);
-    char *esc_tags = escape_mysql(conn, tags_json);
-    char *esc_status = escape_mysql(conn, parse_status);
+    char sql[4096] = {0};
+    int ret = 0;
+    
+    char *esc_user = escape_mysql_text(conn, user);
+    char *esc_md5 = escape_mysql_text(conn, md5);
+    char *esc_desc = escape_mysql_text(conn, desc);
+    char *esc_model = escape_mysql_text(conn, model);
+    char *esc_summary = escape_mysql_text(conn, summary);
+    char *esc_tags = escape_mysql_text(conn, tags);
+    char *esc_status = escape_mysql(conn, status);
     char *esc_blob = NULL;
     if (!esc_user || !esc_md5 || !esc_desc || !esc_model ||
         !esc_summary || !esc_tags || !esc_status) goto fail;
@@ -413,25 +412,14 @@ static int write_user_ai_record(MYSQL *conn, const char *user, const char *md5,
         if (!esc_blob) goto fail;
     }
 
-    char sql[4096] = {0};
-    if (esc_blob) {
-        snprintf(sql, sizeof(sql),
-                 "REPLACE INTO user_file_ai_desc "
-                 "(user, md5, description, embedding, faiss_id, model, status, summary, tags_json, parse_status) "
-                 "VALUES ('%s','%s','%s','%s',-1,'%s',1,'%s','%s','%s')",
-                 esc_user, esc_md5, esc_desc, esc_blob, esc_model, esc_summary, esc_tags, esc_status);
-    } else {
-        snprintf(sql, sizeof(sql),
-                 "REPLACE INTO user_file_ai_desc "
-                 "(user, md5, description, faiss_id, model, status, summary, tags_json, parse_status, error_msg) "
-                 "VALUES ('%s','%s','%s',-1,'%s',2,'%s','%s','%s','embedding failed')",
-                 esc_user, esc_md5, esc_desc, esc_model, esc_summary, esc_tags, esc_status);
-    }
-    int ret = mysql_query(conn, sql) == 0 ? 0 : -1;
-    free(esc_user); free(esc_md5); free(esc_desc); free(esc_model);
-    free(esc_summary); free(esc_tags); free(esc_status);
-    if (esc_blob) free(esc_blob);
-    return ret;
+    snprintf(sql, sizeof(sql),
+             "insert into user_file_ai_desc (user, md5, description, embedding, summary, tags, parse_status) "
+             "values ('%s', '%s', '%s', '%s', '%s', '%s', '%s') "
+             "on duplicate key update description=values(description), "
+             "embedding=values(embedding), summary=values(summary), tags=values(tags), parse_status=values(parse_status)",
+             esc_user, esc_md5, esc_desc, esc_blob, esc_summary, esc_tags, esc_status);
+             
+    ret = mysql_query(conn, sql) == 0 ? 0 : -1;
 
 fail:
     if (esc_user) free(esc_user);
@@ -442,36 +430,32 @@ fail:
     if (esc_tags) free(esc_tags);
     if (esc_status) free(esc_status);
     if (esc_blob) free(esc_blob);
-    return -1;
+    return ret;
 }
 
 /* 写 wiki_page */
-static int write_wiki_page(MYSQL *conn, const char *user, const char *md5,
+static int write_wiki_page(MYSQL *conn, const char *user, const char *md5, 
                            const char *title, const char *summary,
-                           const char *tags_json, const char *outline_json)
+                           const char *tags, const char *content_json) 
 {
-    char *esc_user = escape_mysql(conn, user);
-    char *esc_md5 = escape_mysql(conn, md5);
-    char *esc_title = escape_mysql(conn, title);
-    char *esc_summary = escape_mysql(conn, summary);
-    char *esc_tags = escape_mysql(conn, tags_json);
-    char *esc_outline = escape_mysql(conn, outline_json);
-    if (!esc_user || !esc_md5 || !esc_title) goto fail;
-
     char sql[4096] = {0};
+    int ret = 0;
+
+    char *esc_user = escape_mysql_text(conn, user);
+    char *esc_md5 = escape_mysql_text(conn, md5);
+    char *esc_title = escape_mysql_text(conn, title);
+    char *esc_summary = escape_mysql_text(conn, summary);
+    char *esc_tags = escape_mysql_text(conn, tags);
+    char *esc_content = escape_mysql_text(conn, content_json);
+    if (!esc_user || !esc_md5 || !esc_title) goto fail;
+    
     snprintf(sql, sizeof(sql),
-             "REPLACE INTO wiki_page (user, md5, title, summary, tags_json, outline_json, status) "
-             "VALUES ('%s','%s','%s','%s','%s','%s','active')",
-             esc_user, esc_md5, esc_title,
-             esc_summary ? esc_summary : "",
-             esc_tags ? esc_tags : "[]",
-             esc_outline ? esc_outline : "[]");
-    int ret = mysql_query(conn, sql) == 0 ? 0 : -1;
-    free(esc_user); free(esc_md5); free(esc_title);
-    if (esc_summary) free(esc_summary);
-    if (esc_tags) free(esc_tags);
-    if (esc_outline) free(esc_outline);
-    return ret;
+             "insert into wiki_page (user, md5, title, content_json, summary, status) "
+             "values ('%s', '%s', '%s', '%s', '%s', 'active') "
+             "on duplicate key update title=values(title), content_json=values(content_json), summary=values(summary), status='active'",
+             esc_user, esc_md5, esc_title, esc_content, esc_summary);
+             
+    ret = mysql_query(conn, sql) == 0 ? 0 : -1;
 
 fail:
     if (esc_user) free(esc_user);
@@ -479,8 +463,8 @@ fail:
     if (esc_title) free(esc_title);
     if (esc_summary) free(esc_summary);
     if (esc_tags) free(esc_tags);
-    if (esc_outline) free(esc_outline);
-    return -1;
+    if (esc_content) free(esc_content);
+    return ret;
 }
 
 /* 写 wiki_link（按概念去重替换） */
@@ -647,12 +631,12 @@ static int process_one_task(MYSQL *conn, long task_id, const char *user,
     int text_len = 0;
     char api_key[256] = {0};
 
-    LOG(WORKER_LOG_MODULE, WORKER_LOG_PROC,
+    LOG(UTIL_LOG_MODULE, UTIL_LOG_PROC,
         "processing task %ld: user=%s, md5=%.32s\n", task_id, user, md5);
 
     /* 1. 获取文件信息 */
     if (get_file_url(conn, md5, db_url, sizeof(db_url)) != 0) {
-        LOG(WORKER_LOG_MODULE, WORKER_LOG_PROC, "get_file_url failed for md5=%.32s\n", md5);
+        LOG(UTIL_LOG_MODULE, UTIL_LOG_PROC, "get_file_url failed for md5=%.32s\n", md5);
         handle_task_failure(conn, task_id, retry_count, "get file URL failed");
         return -1;
     }
@@ -691,7 +675,7 @@ static int process_one_task(MYSQL *conn, long task_id, const char *user,
     /* 2. 下载文件 */
     snprintf(file_path, sizeof(file_path), "/tmp/knowledge_%ld_%s", task_id, md5);
     if (download_file(download_url, file_path) != 0) {
-        LOG(WORKER_LOG_MODULE, WORKER_LOG_PROC, "download failed: %s\n", download_url);
+        LOG(UTIL_LOG_MODULE, UTIL_LOG_PROC, "download failed: %s\n", download_url);
         handle_task_failure(conn, task_id, retry_count, "download failed");
         return -1;
     }
@@ -704,7 +688,7 @@ static int process_one_task(MYSQL *conn, long task_id, const char *user,
     }
 
     if (text_len <= 0) {
-        LOG(WORKER_LOG_MODULE, WORKER_LOG_PROC, "text extraction failed for type=%s\n", type);
+        LOG(UTIL_LOG_MODULE, UTIL_LOG_PROC, "text extraction failed for type=%s\n", type);
         remove(file_path);
         /* 非致命：仍尝试用文件名作为描述 */
         snprintf(text_content, sizeof(text_content), "%s file", type);
@@ -737,7 +721,7 @@ static int process_one_task(MYSQL *conn, long task_id, const char *user,
     extract_tags_from_wikilinks(text_content, tags_json, sizeof(tags_json));
     build_outline_json(text_content, outline_json, sizeof(outline_json));
 
-    LOG(WORKER_LOG_MODULE, WORKER_LOG_PROC,
+    LOG(UTIL_LOG_MODULE, UTIL_LOG_PROC,
         "summary=%.100s, tags=%s, outline=%s\n", summary, tags_json, outline_json);
 
     /* 7. 获取 API Key */
@@ -754,7 +738,7 @@ static int process_one_task(MYSQL *conn, long task_id, const char *user,
             memset(vec, 0, sizeof(float) * embedding_dimension);
             if (dashscope_get_embedding(api_key, embedding_model,
                                         description, vec, embedding_dimension) != 0) {
-                LOG(WORKER_LOG_MODULE, WORKER_LOG_PROC,
+                LOG(UTIL_LOG_MODULE, UTIL_LOG_PROC,
                     "embedding failed for task %ld\n", task_id);
                 free(vec);
                 vec = NULL;
@@ -765,7 +749,7 @@ static int process_one_task(MYSQL *conn, long task_id, const char *user,
         }
     } else {
         embedding_error = "no API key configured";
-        LOG(WORKER_LOG_MODULE, WORKER_LOG_PROC,
+        LOG(UTIL_LOG_MODULE, UTIL_LOG_PROC,
             "no API key for task %ld, embedding skipped\n", task_id);
     }
 
@@ -776,7 +760,7 @@ static int process_one_task(MYSQL *conn, long task_id, const char *user,
     /* 9. 写入各表 */
     if (write_global_cache(conn, md5, description, vec, summary, tags_json,
                            embedding_model) != 0) {
-        LOG(WORKER_LOG_MODULE, WORKER_LOG_PROC, "write_global_cache failed\n");
+        LOG(UTIL_LOG_MODULE, UTIL_LOG_PROC, "write_global_cache failed\n");
         if (vec) free(vec);
         handle_task_failure(conn, task_id, retry_count, "write global cache failed");
         return -1;
@@ -784,7 +768,7 @@ static int process_one_task(MYSQL *conn, long task_id, const char *user,
 
     if (write_user_ai_record(conn, user, md5, description, vec, summary, tags_json,
                              embedding_model, final_parse_status) != 0) {
-        LOG(WORKER_LOG_MODULE, WORKER_LOG_PROC, "write_user_ai_record failed\n");
+        LOG(UTIL_LOG_MODULE, UTIL_LOG_PROC, "write_user_ai_record failed\n");
         if (vec) free(vec);
         handle_task_failure(conn, task_id, retry_count, "write user record failed");
         return -1;
@@ -793,7 +777,7 @@ static int process_one_task(MYSQL *conn, long task_id, const char *user,
     if (vec == NULL) {
         cleanup_wiki_artifacts(conn, user, md5);
         update_task_status(conn, task_id, "failed", final_error_msg ? final_error_msg : "embedding failed");
-        LOG(WORKER_LOG_MODULE, WORKER_LOG_PROC,
+        LOG(UTIL_LOG_MODULE, UTIL_LOG_PROC,
             "task %ld failed before wiki build: %s\n", task_id,
             final_error_msg ? final_error_msg : "embedding failed");
         return -1;
@@ -828,7 +812,7 @@ static int process_one_task(MYSQL *conn, long task_id, const char *user,
     if (write_wiki_page(conn, user, md5, wiki_title, summary, tags_json, outline_json) != 0) {
         final_parse_status = "failed";
         final_error_msg = "write wiki page failed";
-        LOG(WORKER_LOG_MODULE, WORKER_LOG_PROC, "write_wiki_page failed\n");
+        LOG(UTIL_LOG_MODULE, UTIL_LOG_PROC, "write_wiki_page failed\n");
     }
 
     /* 10. 写 wiki_link */
@@ -836,7 +820,7 @@ static int process_one_task(MYSQL *conn, long task_id, const char *user,
         write_wiki_links(conn, user, md5, tags_json) != 0) {
         final_parse_status = "failed";
         final_error_msg = "write wiki links failed";
-        LOG(WORKER_LOG_MODULE, WORKER_LOG_PROC, "write_wiki_links failed\n");
+        LOG(UTIL_LOG_MODULE, UTIL_LOG_PROC, "write_wiki_links failed\n");
     }
 
     if (vec) {
@@ -848,7 +832,7 @@ static int process_one_task(MYSQL *conn, long task_id, const char *user,
         update_user_parse_state(conn, user, md5, "failed", final_error_msg);
         cleanup_wiki_artifacts(conn, user, md5);
         update_task_status(conn, task_id, "failed", final_error_msg);
-        LOG(WORKER_LOG_MODULE, WORKER_LOG_PROC,
+        LOG(UTIL_LOG_MODULE, UTIL_LOG_PROC,
             "task %ld marked failed after knowledge write: %s\n", task_id,
             final_error_msg ? final_error_msg : "unknown");
         return -1;
@@ -857,7 +841,7 @@ static int process_one_task(MYSQL *conn, long task_id, const char *user,
     /* 11. 标记成功 */
     update_user_parse_state(conn, user, md5, "success", NULL);
     update_task_status(conn, task_id, "success", NULL);
-    LOG(WORKER_LOG_MODULE, WORKER_LOG_PROC,
+    LOG(UTIL_LOG_MODULE, UTIL_LOG_PROC,
         "task %ld completed successfully\n", task_id);
     return 0;
 }
@@ -908,12 +892,12 @@ int main()
     for (int retry = 0; retry < 10; retry++) {
         conn = msql_conn(mysql_user, mysql_pwd, mysql_db);
         if (conn) break;
-        LOG(WORKER_LOG_MODULE, WORKER_LOG_PROC,
+        LOG(UTIL_LOG_MODULE, UTIL_LOG_PROC,
             "mysql connect failed (attempt %d/10), retrying...\n", retry + 1);
         sleep(3);
     }
     if (!conn) {
-        LOG(WORKER_LOG_MODULE, WORKER_LOG_PROC, "mysql connect failed after 10 retries, exiting\n");
+        LOG(UTIL_LOG_MODULE, UTIL_LOG_PROC, "mysql connect failed after 10 retries, exiting\n");
         return 1;
     }
     mysql_query(conn, "set names utf8mb4");
@@ -926,11 +910,11 @@ int main()
     mysql_query(conn,
         "UPDATE ai_parse_task SET status='pending', error_msg='worker restart recovery' "
         "WHERE status='running'");
-    LOG(WORKER_LOG_MODULE, WORKER_LOG_PROC,
+    LOG(UTIL_LOG_MODULE, UTIL_LOG_PROC,
         "crash recovery: reset %lld running tasks to pending\n",
         (long long)mysql_affected_rows(conn));
 
-    LOG(WORKER_LOG_MODULE, WORKER_LOG_PROC, "worker started\n");
+    LOG(UTIL_LOG_MODULE, UTIL_LOG_PROC, "worker started\n");
 
     while (g_running) {
         long task_id = -1;
@@ -959,7 +943,7 @@ int main()
 
         /* 处理任务 */
         if (process_one_task(conn, task_id, user, md5, task_type, retry_count) != 0) {
-            LOG(WORKER_LOG_MODULE, WORKER_LOG_PROC,
+            LOG(UTIL_LOG_MODULE, UTIL_LOG_PROC,
                 "task %ld failed\n", task_id);
         }
 
@@ -967,9 +951,43 @@ int main()
     }
 
     /* 优雅退出：如果当前正在处理任务，等待完成 */
-    LOG(WORKER_LOG_MODULE, WORKER_LOG_PROC, "worker stopping\n");
+    LOG(UTIL_LOG_MODULE, UTIL_LOG_PROC, "worker stopping\n");
     mysql_close(conn);
     curl_global_cleanup();
-    LOG(WORKER_LOG_MODULE, WORKER_LOG_PROC, "worker stopped\n");
+    LOG(UTIL_LOG_MODULE, UTIL_LOG_PROC, "worker stopped\n");
     return 0;
+}
+
+static char *escape_mysql_text(MYSQL *conn, const char *input)
+{
+    if (!input) return NULL;
+    size_t len = strlen(input);
+    char *escaped = (char *)malloc(len * 2 + 1);
+    if (escaped) {
+        mysql_real_escape_string(conn, escaped, input, len);
+    }
+    return escaped;
+}
+
+static int get_user_ai_config(MYSQL *conn, const char *user, char *api_key, char *model, size_t key_len, size_t model_len) {
+    char sql[512] = {0};
+    snprintf(sql, sizeof(sql), "SELECT api_key, embedding_model FROM user_info WHERE user_name='%s'", user);
+    if (mysql_query(conn, sql) != 0) return -1;
+    MYSQL_RES *res = mysql_store_result(conn);
+    if (!res) return -1;
+    MYSQL_ROW row = mysql_fetch_row(res);
+    int ret = -1;
+    if (row) {
+        if (row[0] && strlen(row[0]) > 0) {
+            strncpy(api_key, row[0], key_len - 1);
+            api_key[key_len - 1] = '\0';
+        }
+        if (row[1] && strlen(row[1]) > 0) {
+            strncpy(model, row[1], model_len - 1);
+            model[model_len - 1] = '\0';
+        }
+        ret = 0;
+    }
+    mysql_free_result(res);
+    return ret;
 }

@@ -20,16 +20,16 @@ const PageHeader = styled.div`
 `;
 
 const Title = styled.h1`
-  font-size: 24px;
+  font-size: 28px;
   font-weight: 700;
-  color: #0F172A;
-  margin: 0 0 4px;
-  letter-spacing: -0.3px;
+  color: #1D1D1F;
+  margin: 0 0 6px;
+  letter-spacing: -0.5px;
 `;
 
 const Subtitle = styled.p`
-  font-size: 14px;
-  color: #64748B;
+  font-size: 15px;
+  color: #86868B;
   margin: 0;
 `;
 
@@ -38,54 +38,62 @@ const StatGrid = styled(Row)`
 `;
 
 const StatCard = styled(Card)`
-  border-radius: 14px;
-  border: 1px solid #E2E8F0;
-  box-shadow: 0 1px 2px rgba(0,0,0,0.03);
-  transition: box-shadow 0.2s ease;
+  border-radius: 20px;
+  border: none;
+  background: #ffffff;
+  box-shadow: 0 4px 24px rgba(0,0,0,0.04);
+  transition: transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 0.3s ease;
 
   &:hover {
-    box-shadow: 0 4px 12px rgba(0,0,0,0.06);
+    transform: translateY(-4px) scale(1.01);
+    box-shadow: 0 12px 32px rgba(0,0,0,0.08);
   }
 
   .ant-card-body {
-    padding: 20px 24px;
+    padding: 24px;
   }
 
   .ant-statistic-title {
-    font-size: 12.5px;
-    color: #94A3B8;
+    font-size: 13px;
+    color: #86868B;
     font-weight: 500;
     text-transform: uppercase;
     letter-spacing: 0.5px;
   }
 
   .ant-statistic-content {
-    font-size: 26px;
+    font-size: 28px;
     font-weight: 700;
-    color: #0F172A;
+    color: #1D1D1F;
   }
 `;
 
 const SectionCard = styled(Card)`
-  border-radius: 14px;
-  border: 1px solid #E2E8F0;
-  box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+  border-radius: 20px;
+  border: none;
+  background: #ffffff;
+  box-shadow: 0 4px 24px rgba(0,0,0,0.04);
   margin-bottom: 24px;
+  transition: transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 0.3s ease;
+
+  &:hover {
+    box-shadow: 0 12px 32px rgba(0,0,0,0.08);
+  }
 
   .ant-card-head {
-    border-bottom: 1px solid #F1F5F9;
-    padding: 18px 24px;
+    border-bottom: 1px solid rgba(0,0,0,0.04);
+    padding: 20px 24px;
     min-height: auto;
   }
 
   .ant-card-head-title {
-    font-size: 15px;
+    font-size: 16px;
     font-weight: 600;
-    color: #0F172A;
+    color: #1D1D1F;
   }
 
   .ant-card-body {
-    padding: 20px 24px;
+    padding: 24px;
   }
 `;
 

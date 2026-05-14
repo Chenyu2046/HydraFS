@@ -10,94 +10,88 @@ const StyledHeader = styled(Header)`
   position: sticky;
   top: 0;
   z-index: 100;
-  background: rgba(255, 255, 255, 0.85);
+  background: rgba(255, 255, 255, 0.72);
   backdrop-filter: saturate(180%) blur(20px);
   -webkit-backdrop-filter: saturate(180%) blur(20px);
-  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.04);
   display: flex;
   align-items: center;
-  padding: 0 32px;
+  padding: 0 40px;
   height: 56px;
   line-height: 56px;
+`;
+
+const ContentWrapper = styled.div`
+  width: 100%;
+  max-width: 1200px;
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
 `;
 
 const Logo = styled(Link)`
   font-size: 18px;
   font-weight: 700;
-  color: #0F172A;
-  margin-right: 40px;
-  letter-spacing: -0.3px;
+  color: #1D1D1F;
+  margin-right: 48px;
+  letter-spacing: -0.5px;
   text-decoration: none;
+  transition: opacity 0.2s ease;
   &:hover {
-    color: #2563EB;
+    opacity: 0.8;
+    color: #1D1D1F;
   }
 `;
 
 const NavLinks = styled.nav`
   display: flex;
-  gap: 4px;
+  gap: 8px;
   flex: 1;
 `;
 
 const NavItem = styled(Link)`
-  padding: 6px 14px;
+  padding: 4px 12px;
   border-radius: 8px;
   font-size: 13.5px;
-  font-weight: 500;
-  color: ${props => props.$active ? '#2563EB' : '#475569'};
-  background: ${props => props.$active ? '#EFF6FF' : 'transparent'};
+  font-weight: ${props => props.$active ? '600' : '400'};
+  color: ${props => props.$active ? '#1D1D1F' : '#86868B'};
+  background: ${props => props.$active ? 'rgba(0,0,0,0.04)' : 'transparent'};
   text-decoration: none;
-  transition: all 0.15s ease;
+  transition: all 0.2s ease;
 
   &:hover {
-    color: #2563EB;
-    background: #EFF6FF;
+    color: #1D1D1F;
+    background: rgba(0,0,0,0.04);
   }
 `;
 
 const UserArea = styled.div`
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 16px;
   margin-left: auto;
 `;
 
 const UserName = styled.span`
-  font-size: 13.5px;
+  font-size: 13px;
   font-weight: 500;
-  color: #334155;
+  color: #1D1D1F;
 `;
 
 const LogoutBtn = styled.button`
   padding: 4px 12px;
   border: none;
   background: transparent;
-  color: #94A3B8;
+  color: #86868B;
   font-size: 13px;
   font-weight: 500;
   cursor: pointer;
-  border-radius: 6px;
-  transition: all 0.15s ease;
+  border-radius: 20px;
+  transition: all 0.2s ease;
 
   &:hover {
-    color: #DC2626;
-    background: #FEF2F2;
-  }
-`;
-
-const LoginLink = styled(Link)`
-  padding: 6px 16px;
-  background: #2563EB;
-  color: #fff;
-  border-radius: 8px;
-  font-size: 13.5px;
-  font-weight: 500;
-  text-decoration: none;
-  transition: background 0.15s ease;
-
-  &:hover {
-    background: #1D4ED8;
-    color: #fff;
+    color: #FF3B30;
+    background: rgba(255, 59, 48, 0.08);
   }
 `;
 
@@ -123,22 +117,24 @@ const NavBar = () => {
 
   return (
     <StyledHeader>
-      <Logo to="/">CloudVault</Logo>
-      <NavLinks>
-        {navItems.map(item => (
-          <NavItem
-            key={item.path}
-            to={item.path}
-            $active={location.pathname === item.path}
-          >
-            {item.label}
-          </NavItem>
-        ))}
-      </NavLinks>
-      <UserArea>
-        <UserName>{user.username}</UserName>
-        <LogoutBtn onClick={handleLogout}>退出</LogoutBtn>
-      </UserArea>
+      <ContentWrapper>
+        <Logo to="/">CloudVault</Logo>
+        <NavLinks>
+          {navItems.map(item => (
+            <NavItem
+              key={item.path}
+              to={item.path}
+              $active={location.pathname === item.path}
+            >
+              {item.label}
+            </NavItem>
+          ))}
+        </NavLinks>
+        <UserArea>
+          <UserName>{user.username}</UserName>
+          <LogoutBtn onClick={handleLogout}>退出</LogoutBtn>
+        </UserArea>
+      </ContentWrapper>
     </StyledHeader>
   );
 };

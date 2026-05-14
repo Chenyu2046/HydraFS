@@ -1,4 +1,3 @@
-
 # 使用的编译器
 CC=gcc
 CXX=g++
@@ -208,6 +207,7 @@ $(CGI_SRC_PATH)/faiss_wrapper.o: $(COMMON_PATH)/faiss_wrapper.cpp
 $(ai): $(CGI_SRC_PATH)/ai_cgi.o \
 	   $(CGI_SRC_PATH)/dashscope_api.o \
 	   $(CGI_SRC_PATH)/faiss_wrapper.o \
+	   $(COMMON_PATH)/knowledge_task.o \
 	   $(COMMON_PATH)/make_log.o \
 	   $(COMMON_PATH)/util_cgi.o \
 	   $(COMMON_PATH)/cJSON.o \
@@ -224,6 +224,7 @@ $(CGI_SRC_PATH)/knowledge_worker.o: $(CGI_SRC_PATH)/knowledge_worker.cpp
 $(worker): $(CGI_SRC_PATH)/knowledge_worker.o \
 	   $(CGI_SRC_PATH)/dashscope_api.o \
 	   $(CGI_SRC_PATH)/faiss_wrapper.o \
+	   $(COMMON_PATH)/knowledge_task.o \
 	   $(COMMON_PATH)/make_log.o \
 	   $(COMMON_PATH)/cJSON.o \
 	   $(COMMON_PATH)/deal_mysql.o \

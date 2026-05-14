@@ -3,6 +3,9 @@ FROM ubuntu:20.04
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=Asia/Shanghai
 
+RUN sed -i 's/archive.ubuntu.com/mirrors.aliyun.com/g' /etc/apt/sources.list && \
+    sed -i 's/security.ubuntu.com/mirrors.aliyun.com/g' /etc/apt/sources.list
+
 # 安装基础依赖
 RUN apt-get update && apt-get install -y \
     gcc g++ make \
@@ -19,7 +22,7 @@ RUN apt-get update && apt-get install -y \
     poppler-utils \
     python3-pip \
     git \
-    && pip3 install cmake \
+    && pip3 install -i https://pypi.tuna.tsinghua.edu.cn/simple cmake \
     && rm -rf /var/lib/apt/lists/*
 
 # 复制预下载的依赖源码

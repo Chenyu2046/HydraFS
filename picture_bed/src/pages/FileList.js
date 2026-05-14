@@ -2,20 +2,21 @@ import React, { useState, useEffect } from 'react';
 import { Upload, Card, Table, message, Button, Tooltip, Space, Progress, Tag } from 'antd';
 import {
   UploadOutlined,
-  ShareAltOutlined,
   DeleteOutlined,
   DownloadOutlined,
+  ShareAltOutlined,
+  CheckCircleOutlined,
   FileOutlined,
+  FileTextOutlined,
+  FileImageOutlined,
   FilePdfOutlined,
+  FileZipOutlined,
   FileWordOutlined,
   FileExcelOutlined,
-  FileZipOutlined,
-  FileTextOutlined,
-  CheckCircleOutlined,
-  BookOutlined,
-  LoadingOutlined,
-  CloseCircleOutlined,
-  MinusCircleOutlined,
+  FilePptOutlined,
+  PlaySquareOutlined,
+  CustomerServiceOutlined,
+  SyncOutlined
 } from '@ant-design/icons';
 import styled from '@emotion/styled';
 import { useAuth } from '../contexts/AuthContext';
@@ -25,56 +26,73 @@ import { describeFile } from '../services/ai';
 
 const PageHeader = styled.div`
   margin-bottom: 24px;
-  h1 { font-size: 22px; font-weight: 700; color: #0F172A; margin: 0 0 4px; letter-spacing: -0.3px; }
-  p { font-size: 14px; color: #64748B; margin: 0; }
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  
+  .title-area {
+    h1 { font-size: 28px; font-weight: 700; color: #1D1D1F; margin: 0 0 6px; letter-spacing: -0.5px; }                                                                        p { font-size: 15px; color: #86868B; margin: 0; }
+  }
 `;
 
-const UploadCard = styled(Card)`
-  border-radius: 14px;
-  border: 2px dashed #E2E8F0;
-  background: #FAFBFC;
-  transition: border-color 0.2s, background 0.2s;
+const Toolbar = styled.div`
+  display: flex;
+  gap: 12px;
   margin-bottom: 24px;
-
-  &:hover {
-    border-color: #2563EB;
-    background: #F8FAFF;
-  }
-
-  .ant-card-body { padding: 20px; }
-  .ant-upload-drag { border: none; background: transparent; height: 140px; }
-  .ant-upload-drag-icon { font-size: 32px; color: #2563EB; margin-bottom: 8px; }
-  .ant-upload-text { font-size: 14px; font-weight: 500; color: #475569; }
-  .ant-upload-hint { font-size: 12px; color: #94A3B8; }
+  background: #ffffff;
+  padding: 16px 20px;
+  border-radius: 16px;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.02);
 `;
 
 const StyledTable = styled(Table)`
-  .ant-table {
-    border-radius: 14px;
+  .ant-table-wrapper {
+    background: #ffffff;
+    border-radius: 20px;
+    box-shadow: 0 4px 24px rgba(0,0,0,0.04);
     overflow: hidden;
-    border: 1px solid #E2E8F0;
+  }
+  
+  .ant-table {
+    background: transparent;
   }
 
   .ant-table-thead > tr > th {
-    background: #F8FAFC;
-    border-bottom: 1px solid #E2E8F0;
-    font-size: 12.5px;
-    font-weight: 600;
-    color: #64748B;
-    text-transform: uppercase;
-    letter-spacing: 0.3px;
-    padding: 12px 16px;
+    background: #F5F5F7;
+    color: #86868B;
+    font-weight: 500;
+    border-bottom: 1px solid rgba(0,0,0,0.04);
+    padding: 16px 24px;
+    
+    &::before {
+      display: none !important;
+    }
   }
 
   .ant-table-tbody > tr > td {
-    padding: 12px 16px;
-    border-bottom: 1px solid #F1F5F9;
-    font-size: 13.5px;
-    color: #334155;
+    padding: 16px 24px;
+    border-bottom: 1px solid #F5F5F7;
+    transition: background 0.2s ease;
   }
 
   .ant-table-tbody > tr:hover > td {
-    background: #F8FAFC;
+    background: #FAFAFC;
+  }
+  
+  .ant-table-pagination {
+    margin: 16px 24px !important;
+  }
+`;
+
+const ActionButton = styled(Button)`
+  border: none;
+  background: transparent;
+  color: #86868B;
+  box-shadow: none;
+  
+  &:hover {
+    color: #007AFF;
+    background: rgba(0, 122, 255, 0.08);
   }
 `;
 
@@ -163,48 +181,44 @@ const FileList = () => {
   const columns = [
     {
       title: '文件名',
-      dataIndex: 'file_name',
-      key: 'file_name',
+      dataIndex: 'name',
+      key: 'name',
       render: (text, record) => (
-        <Space>
-          {getFileIcon(record.type)}
-          <span style={{ fontWeight: 500 }}>{text}</span>
-        </Space>
+        <Space size="middle">
+          {getFileIcon(record)}
+          <span style={{ fontWeight: 500, color: '#1D1D1F' }}>{text}</span>
+          {record.share_status === 1 && <Tag color="blue" bordered={false}>已分享</Tag>}
+          {record.wiki_ready === 1 && <Tag color="cyan" bordered={false} style={{ cursor: 'pointer' }} onClick={() => navigate(`/wiki/${record.md5}`)}>Wiki</Tag>}                  </Space>
       ),
     },
     {
-      title: '类型', dataIndex: 'type', key: 'type', width: 80,
-      render: (t) => <Tag style={{ borderRadius: 6, background: '#F1F5F9', border: 'none', color: '#475569', fontWeight: 500, fontSize: 11 }}>{(t || '').toUpperCase()}</Tag>,
+      title: '大小',
+      dataIndex: 'size',
+      key: 'size',
+      render: (size) => <span style={{ color: '#86868B' }}>{formatSize(size)}</span>,
     },
     {
-      title: '解析', dataIndex: 'parse_status', key: 'parse_status', width: 100,
-      render: (status) => {
-        const m = {
-          pending:   { color: 'default', icon: <MinusCircleOutlined />, text: '待处理' },
-          running:   { color: 'processing', icon: <LoadingOutlined />, text: '解析中' },
-          success:   { color: 'success', icon: <CheckCircleOutlined />, text: '已解析' },
-          failed:    { color: 'error', icon: <CloseCircleOutlined />, text: '失败' },
-          skipped:   { color: 'warning', icon: <MinusCircleOutlined />, text: '跳过' },
-        };
-        const s = m[status] || m.pending;
-        return <Tag color={s.color} icon={s.icon} style={{ borderRadius: 6 }}>{s.text}</Tag>;
-      },
+      title: '上传时间',
+      dataIndex: 'uploadTime',
+      key: 'uploadTime',
+      render: (text) => <span style={{ color: '#86868B' }}>{text}</span>,
     },
-    { title: '大小', dataIndex: 'size', key: 'size', width: 100, render: (s) => formatSize(s) },
-    { title: '上传时间', dataIndex: 'create_time', key: 'create_time', width: 170 },
-    { title: '下载', dataIndex: 'pv', key: 'pv', width: 70 },
     {
-      title: '操作', key: 'action', width: 160,
+      title: '操作',
+      key: 'action',
       render: (_, record) => (
-        <Space size={4}>
-          {record.share_status === 1
-            ? <Tooltip title="取消分享"><Button type="text" size="small" icon={<CheckCircleOutlined style={{ color: '#059669' }} />} onClick={() => handleCancelShare(record)} /></Tooltip>
-            : <Tooltip title="分享"><Button type="text" size="small" icon={<ShareAltOutlined />} onClick={() => handleShare(record)} /></Tooltip>}
-          <Tooltip title="下载"><Button type="text" size="small" icon={<DownloadOutlined />} onClick={() => handleDownload(record)} /></Tooltip>
-          <Tooltip title="删除"><Button type="text" size="small" danger icon={<DeleteOutlined />} onClick={() => handleDelete(record)} /></Tooltip>
-          {record.wiki_ready === 1 && (
-            <Tooltip title="Wiki"><Button type="text" size="small" icon={<BookOutlined />} onClick={() => navigate(`/wiki/${record.md5}`)} /></Tooltip>
+        <Space size="small">
+          {record.share_status === 1 ? (
+            <Tooltip title="取消分享">
+              <ActionButton icon={<CheckCircleOutlined style={{ color: '#34C759' }} />} onClick={() => handleCancelShare(record)} />                                                  </Tooltip>
+          ) : (
+            <Tooltip title="分享">
+              <ActionButton icon={<ShareAltOutlined />} onClick={() => handleShare(record)} />                                                                                        </Tooltip>
           )}
+          <Tooltip title="下载">
+            <ActionButton icon={<DownloadOutlined />} onClick={() => handleDownload(record)} />                                                                                     </Tooltip>
+          <Tooltip title="删除">
+            <ActionButton icon={<DeleteOutlined />} onClick={() => handleDelete(record)} style={{ color: '#FF3B30' }} className="delete-btn" />                                     </Tooltip>
         </Space>
       ),
     },
@@ -213,21 +227,31 @@ const FileList = () => {
   return (
     <div>
       <PageHeader>
-        <h1>文件</h1>
-        <p>上传与管理文档、压缩包等非图片文件</p>
+        <div className="title-area">
+          <h1>文件管理</h1>
+          <p>管理您的所有文件</p>
+        </div>
       </PageHeader>
 
-      <UploadCard>
-        <Upload.Dragger showUploadList={false} disabled={uploading} beforeUpload={(file) => { handleUpload(file); return false; }}>
-          <p className="ant-upload-drag-icon"><UploadOutlined /></p>
-          <p className="ant-upload-text">点击或拖拽上传文件</p>
-          <p className="ant-upload-hint">支持任意类型，大文件自动分片上传</p>
-        </Upload.Dragger>
-        {uploading && <Progress percent={uploadProgress} status="active" style={{ marginTop: 12 }} strokeColor="#2563EB" />}
-      </UploadCard>
+      <Toolbar>
+        <Upload
+          customRequest={handleUpload}
+          showUploadList={false}
+          disabled={uploading}
+        >
+          <Button type="primary" icon={<UploadOutlined />} loading={uploading} size="large" style={{ borderRadius: '12px' }}>                                                           上传文件
+          </Button>
+        </Upload>
+        <Button icon={<SyncOutlined />} onClick={fetchFiles} size="large" style={{ borderRadius: '12px' }}>刷新</Button>                                                              </Toolbar>
 
-      <StyledTable columns={columns} dataSource={files} rowKey="md5" pagination={{ pageSize: 10 }} locale={{ emptyText: '暂无文件' }} />
-    </div>
+      {uploading && (
+        <Card style={{ marginBottom: 20, borderRadius: 16, border: 'none', boxShadow: 
+'0 4px 20px rgba(0,0,0,0.02)' }}>                                                               <div>正在上传...</div>
+          <Progress percent={uploadProgress} strokeColor="#007AFF" />
+        </Card>
+      )}
+
+      <StyledTable columns={columns} dataSource={files} rowKey="md5" pagination={{ pageSize: 10 }} locale={{ emptyText: '暂无文件' }} />                                          </div>
   );
 };
 
