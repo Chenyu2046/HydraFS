@@ -7,53 +7,83 @@ import styled from '@emotion/styled';
 import React, { useState } from 'react';
 import SparkMD5 from 'spark-md5';
 
-const LoginWrapper = styled.div`
+const Wrapper = styled.div`
   display: flex;
   justify-content: center;
   align-items: center;
-  min-height: calc(100vh - 150px);
+  min-height: 100vh;
+  background: #F8FAFC;
 `;
 
 const LoginCard = styled(Card)`
   width: 100%;
-  max-width: 400px;
-  background: rgba(255, 255, 255, 0.8);
-  backdrop-filter: blur(10px);
-  border: 1px solid rgba(255, 255, 255, 0.3);
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+  max-width: 420px;
   border-radius: 16px;
+  border: 1px solid #E2E8F0;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04), 0 4px 16px rgba(0,0,0,0.04);
+
+  .ant-card-head {
+    border-bottom: none;
+    padding: 32px 32px 0;
+    min-height: auto;
+    text-align: center;
+  }
 
   .ant-card-head-title {
-    text-align: center;
-    color: #1a5d1a;
-    font-size: 24px;
+    font-size: 22px;
+    font-weight: 700;
+    color: #0F172A;
   }
 
-  .ant-form-item-control-input-content {
-    input {
-      background: rgba(255, 255, 255, 0.9);
-    }
+  .ant-card-body {
+    padding: 28px 32px 32px;
   }
 
-  .ant-btn-primary {
-    background: #4CAF50;
-    border-color: #45a049;
-    
-    &:hover {
-      background: #45a049;
-      border-color: #3d8b40;
+  .ant-form-item {
+    margin-bottom: 16px;
+  }
+
+  .ant-input-affix-wrapper {
+    border-radius: 10px;
+    border-color: #E2E8F0;
+    padding: 8px 12px;
+
+    &:hover, &:focus, &-focused {
+      border-color: #2563EB;
+      box-shadow: 0 0 0 3px rgba(37,99,235,0.1);
     }
   }
 
   .register-link {
     text-align: center;
-    margin-top: 16px;
-    color: #1a5d1a;
+    margin-top: 20px;
+    font-size: 13.5px;
+    color: #64748B;
     cursor: pointer;
-    
+
     &:hover {
-      color: #2e7d32;
+      color: #2563EB;
     }
+
+    b {
+      color: #2563EB;
+      font-weight: 600;
+    }
+  }
+`;
+
+const SubmitButton = styled(Button)`
+  height: 42px;
+  border-radius: 10px;
+  font-weight: 600;
+  font-size: 15px;
+  background: #2563EB;
+  border-color: #2563EB;
+  margin-top: 4px;
+
+  &:hover {
+    background: #1D4ED8 !important;
+    border-color: #1D4ED8 !important;
   }
 `;
 
@@ -63,7 +93,6 @@ const Login = () => {
   const [isRegister, setIsRegister] = useState(false);
   const [form] = Form.useForm();
 
-  // 添加 MD5 计算函数
   const calculateMD5 = (str) => {
     const spark = new SparkMD5();
     spark.append(str);
@@ -72,7 +101,6 @@ const Login = () => {
 
   const onFinish = async (values) => {
     if (isRegister) {
-      // 注册时密码明文传输
       try {
         const data = await registerUser(values);
         if (data.code === 0) {
@@ -89,15 +117,11 @@ const Login = () => {
         console.error('注册错误：', error);
       }
     } else {
-      // 登录时密码 MD5 加密后传输
       try {
         const encryptedPassword = calculateMD5(values.password);
         const data = await loginUser(values.username, encryptedPassword);
         message.success('登录成功！');
-        login({
-          username: values.username,
-          token: data.token
-        });
+        login({ username: values.username, token: data.token });
         navigate('/');
       } catch (error) {
         if (error.message === '登录失败') {
@@ -111,8 +135,8 @@ const Login = () => {
   };
 
   return (
-    <LoginWrapper>
-      <LoginCard title={isRegister ? "用户注册" : "用户登录"}>
+    <Wrapper>
+      <LoginCard title={isRegister ? "创建账号" : "CloudVault"}>
         <Form
           form={form}
           name="login"
@@ -122,62 +146,36 @@ const Login = () => {
         >
           {isRegister && (
             <>
-              <Form.Item
-                name="nickname"
-                rules={[{ required: true, message: '请输入昵称！' }]}
-              >
-                <Input 
-                  prefix={<UserOutlined />} 
-                  placeholder="昵称" 
-                />
+              <Form.Item name="nickname" rules={[{ required: true, message: '请输入昵称' }]}>
+                <Input prefix={<UserOutlined />} placeholder="昵称" />
               </Form.Item>
-
               <Form.Item
                 name="email"
                 rules={[
-                  { required: true, message: '请输入邮箱！' },
-                  { type: 'email', message: '请输入有效的邮箱地址！' }
+                  { required: true, message: '请输入邮箱' },
+                  { type: 'email', message: '请输入有效的邮箱地址' }
                 ]}
               >
-                <Input 
-                  prefix={<MailOutlined />} 
-                  placeholder="邮箱" 
-                />
+                <Input prefix={<MailOutlined />} placeholder="邮箱" />
               </Form.Item>
-
               <Form.Item
                 name="phone"
                 rules={[
-                  { required: true, message: '请输入手机号码！' },
-                  { pattern: /^1[3-9]\d{9}$/, message: '请输入有效的手机号码！' }
+                  { required: true, message: '请输入手机号码' },
+                  { pattern: /^1[3-9]\d{9}$/, message: '请输入有效的手机号码' }
                 ]}
               >
-                <Input 
-                  prefix={<PhoneOutlined />} 
-                  placeholder="手机号码" 
-                />
+                <Input prefix={<PhoneOutlined />} placeholder="手机号码" />
               </Form.Item>
             </>
           )}
 
-          <Form.Item
-            name="username"
-            rules={[{ required: true, message: '请输入用户名！' }]}
-          >
-            <Input 
-              prefix={<UserOutlined />} 
-              placeholder="用户名" 
-            />
+          <Form.Item name="username" rules={[{ required: true, message: '请输入用户名' }]}>
+            <Input prefix={<UserOutlined />} placeholder="用户名" />
           </Form.Item>
 
-          <Form.Item
-            name="password"
-            rules={[{ required: true, message: '请输入密码！' }]}
-          >
-            <Input.Password
-              prefix={<LockOutlined />}
-              placeholder="密码"
-            />
+          <Form.Item name="password" rules={[{ required: true, message: '请输入密码' }]}>
+            <Input.Password prefix={<LockOutlined />} placeholder="密码" />
           </Form.Item>
 
           {isRegister && (
@@ -185,41 +183,38 @@ const Login = () => {
               name="confirmPassword"
               dependencies={['password']}
               rules={[
-                { required: true, message: '请确认密码！' },
+                { required: true, message: '请确认密码' },
                 ({ getFieldValue }) => ({
                   validator(_, value) {
                     if (!value || getFieldValue('password') === value) {
                       return Promise.resolve();
                     }
-                    return Promise.reject(new Error('两次输入的密码不一致！'));
+                    return Promise.reject(new Error('两次输入的密码不一致'));
                   },
                 }),
               ]}
             >
-              <Input.Password
-                prefix={<LockOutlined />}
-                placeholder="确认密码"
-              />
+              <Input.Password prefix={<LockOutlined />} placeholder="确认密码" />
             </Form.Item>
           )}
 
           <Form.Item>
-            <Button type="primary" htmlType="submit" block>
+            <SubmitButton type="primary" htmlType="submit" block>
               {isRegister ? '注册' : '登录'}
-            </Button>
+            </SubmitButton>
           </Form.Item>
         </Form>
-        <div 
-          className="register-link" 
+        <div
+          className="register-link"
           onClick={() => {
             setIsRegister(!isRegister);
             form.resetFields();
           }}
         >
-          {isRegister ? '已有账号？点击登录' : '没有账号？点击注册'}
+          {isRegister ? '已有账号？<b>立即登录</b>' : '没有账号？<b>立即注册</b>'}
         </div>
       </LoginCard>
-    </LoginWrapper>
+    </Wrapper>
   );
 };
 

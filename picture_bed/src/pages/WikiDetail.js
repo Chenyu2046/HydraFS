@@ -2,10 +2,47 @@ import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Card, Tag, Descriptions, List, Typography, Spin, message, Empty, Button, Space } from 'antd';
 import { FileOutlined, LinkOutlined, ArrowLeftOutlined } from '@ant-design/icons';
+import styled from '@emotion/styled';
 import { useAuth } from '../contexts/AuthContext';
 import { fetchWiki, fetchBacklinks } from '../services/ai';
 
 const { Title, Paragraph, Text } = Typography;
+
+const PageHeader = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 24px;
+`;
+
+const StyledCard = styled(Card)`
+  border-radius: 14px;
+  border: 1px solid #E2E8F0;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+  margin-bottom: 16px;
+
+  .ant-card-head {
+    border-bottom: 1px solid #F1F5F9;
+    padding: 16px 24px;
+    .ant-card-head-title { font-size: 15px; font-weight: 600; color: #0F172A; }
+  }
+  .ant-card-body { padding: 20px 24px; }
+`;
+
+const InnerCard = styled(Card)`
+  border-radius: 10px;
+  border: 1px solid #F1F5F9;
+  background: #FAFBFC;
+  margin-bottom: 14px;
+
+  .ant-card-head {
+    border-bottom: none;
+    padding: 12px 16px;
+    min-height: auto;
+    .ant-card-head-title { font-size: 13.5px; font-weight: 600; color: #475569; }
+  }
+  .ant-card-body { padding: 8px 16px 14px; }
+`;
 
 const WikiDetail = () => {
   const { md5 } = useParams();
@@ -16,42 +53,25 @@ const WikiDetail = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
-  useEffect(() => {
-    if (user && md5) {
-      loadWikiData();
-    }
-  }, [md5, user]);
+  useEffect(() => { if (user && md5) { loadWikiData(); } }, [md5, user]);
 
   const loadWikiData = async () => {
-    setLoading(true);
-    setError(null);
+    setLoading(true); setError(null);
     try {
-      const [wikiData, blData] = await Promise.all([
-        fetchWiki(md5, user),
-        fetchBacklinks(md5, user)
-      ]);
-      setWiki(wikiData);
-      setBacklinks(blData || []);
+      const [wikiData, blData] = await Promise.all([fetchWiki(md5, user), fetchBacklinks(md5, user)]);
+      setWiki(wikiData); setBacklinks(blData || []);
     } catch (e) {
       if (e.tokenExpired) { message.error('登录已过期'); logout(); return; }
-      console.error('load wiki failed:', e);
       setError(e.message);
-    } finally {
-      setLoading(false);
-    }
+    } finally { setLoading(false); }
   };
 
-  if (loading) return <div style={{ textAlign: 'center', padding: 60 }}><Spin size="large" tip="加载 Wiki..." /></div>;
+  if (loading) return <div style={{ textAlign: 'center', padding: 80 }}><Spin size="large" /></div>;
   if (error) return <Empty description={error} />;
   if (!wiki) return <Empty description="Wiki 页面不存在" />;
 
-  const parseTags = (tagsStr) => {
-    try { return JSON.parse(tagsStr); } catch { return []; }
-  };
-
-  const parseOutline = (outlineStr) => {
-    try { return JSON.parse(outlineStr); } catch { return []; }
-  };
+  const parseTags = (s) => { try { return JSON.parse(s); } catch { return []; } };
+  const parseOutline = (s) => { try { return JSON.parse(s); } catch { return []; } };
 
   const tags = parseTags(wiki.tags);
   const outline = parseOutline(wiki.outline);
@@ -59,76 +79,65 @@ const WikiDetail = () => {
 
   return (
     <div>
-      <Space style={{ marginBottom: 16 }}>
+      <PageHeader>
         <Button icon={<ArrowLeftOutlined />} onClick={() => navigate(-1)}>返回</Button>
-        <Button type="primary" icon={<FileOutlined />}
-          href={wiki.source?.md5 ? `/files` : '#'}
-          onClick={() => navigate('/files')}>
-          查看源文件
-        </Button>
-      </Space>
+        <Button icon={<FileOutlined />} onClick={() => navigate('/files')}>源文件</Button>
+      </PageHeader>
 
-      <Card>
-        <Title level={3}>{wiki.title || '未命名 Wiki'}</Title>
-        <Descriptions column={1} size="small" style={{ marginBottom: 16 }}>
+      <StyledCard>
+        <Title level={3} style={{ margin: '0 0 12px', fontWeight: 700 }}>{wiki.title || '未命名 Wiki'}</Title>
+        <Descriptions column={1} size="small" style={{ marginBottom: 16 }} labelStyle={{ color: '#94A3B8', fontWeight: 500 }}>
           <Descriptions.Item label="源文件">{wiki.source?.filename || '-'}</Descriptions.Item>
           <Descriptions.Item label="类型">{(wiki.source?.type || '').toUpperCase()}</Descriptions.Item>
         </Descriptions>
 
         {tags.length > 0 && (
           <div style={{ marginBottom: 16 }}>
-            <Text strong>标签：</Text>
-            {tags.map((t, i) => <Tag key={i} color="blue">{t}</Tag>)}
+            {tags.map((t, i) => <Tag key={i} color="blue" style={{ borderRadius: 6 }}>{t}</Tag>)}
           </div>
         )}
 
         {wiki.summary && (
-          <Card type="inner" title="摘要" size="small" style={{ marginBottom: 16 }}>
-            <Paragraph>{wiki.summary}</Paragraph>
-          </Card>
+          <InnerCard title="摘要" size="small">
+            <Paragraph style={{ margin: 0, fontSize: 14, lineHeight: 1.7, color: '#334155' }}>{wiki.summary}</Paragraph>
+          </InnerCard>
         )}
 
         {outline.length > 0 && (
-          <Card type="inner" title="内容大纲" size="small" style={{ marginBottom: 16 }}>
-            <List size="small" dataSource={outline}
-              renderItem={item => <List.Item>{item}</List.Item>} />
-          </Card>
+          <InnerCard title="大纲" size="small">
+            <List size="small" dataSource={outline} renderItem={item => <List.Item style={{ padding: '6px 0', fontSize: 13.5 }}>{item}</List.Item>} />
+          </InnerCard>
         )}
 
         {links.length > 0 && (
-          <Card type="inner" title="概念链接" size="small" style={{ marginBottom: 16 }}>
-            {links.map((link, i) => (
-              <Tag key={i} icon={<LinkOutlined />} color="green" style={{ marginBottom: 4 }}>{link}</Tag>
-            ))}
-          </Card>
+          <InnerCard title="概念链接" size="small">
+            {links.map((link, i) => <Tag key={i} icon={<LinkOutlined />} color="green" style={{ borderRadius: 6, marginBottom: 4 }}>{link}</Tag>)}
+          </InnerCard>
         )}
-      </Card>
+      </StyledCard>
 
       {backlinks.length > 0 && (
-        <Card title="反向链接（引用这些概念的文件）" style={{ marginTop: 16 }}>
+        <StyledCard title="反向链接">
           {backlinks.map((item, i) => (
-            <Card key={i} type="inner" size="small" style={{ marginBottom: 8 }}>
-              <Text strong>{item.concept}</Text>
+            <InnerCard key={i} size="small">
+              <Text strong style={{ fontSize: 13.5 }}>{item.concept}</Text>
               <List size="small" style={{ marginTop: 8 }}
                 dataSource={item.referenced_by || []}
                 renderItem={ref => (
-                  <List.Item>
-                    <FileOutlined style={{ marginRight: 8 }} />
-                    <Button type="link" style={{ padding: 0 }}
-                      onClick={() => navigate(`/wiki/${ref.md5}`)}>
+                  <List.Item style={{ padding: '6px 0' }}>
+                    <FileOutlined style={{ marginRight: 8, color: '#94A3B8' }} />
+                    <Button type="link" style={{ padding: 0, fontSize: 13.5 }} onClick={() => navigate(`/wiki/${ref.md5}`)}>
                       {ref.filename}
                     </Button>
                   </List.Item>
                 )} />
-            </Card>
+            </InnerCard>
           ))}
-        </Card>
+        </StyledCard>
       )}
 
       {backlinks.length === 0 && (
-        <Card style={{ marginTop: 16 }}>
-          <Empty description="暂无反向链接（其他文件未引用此文件中的概念）" />
-        </Card>
+        <StyledCard><Empty description="暂无反向链接" /></StyledCard>
       )}
     </div>
   );

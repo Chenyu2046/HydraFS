@@ -14,18 +14,14 @@ import { AuthProvider, useAuth } from './contexts/AuthContext';
 const { Content } = Layout;
 
 const StyledLayout = styled(Layout)`
-  background: linear-gradient(135deg, rgba(200, 255, 200, 0.4), rgba(150, 255, 150, 0.2));
   min-height: 100vh;
+  background: #F8FAFC;
 `;
 
-const GlassContent = styled(Content)`
-  background: rgba(255, 255, 255, 0.25);
-  backdrop-filter: blur(10px);
-  border-radius: 16px;
-  border: 1px solid rgba(255, 255, 255, 0.3);
-  margin: 24px;
-  padding: 24px;
-  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+const PageContent = styled(Content)`
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 24px 32px;
 `;
 
 const PrivateRoute = ({ children }) => {
@@ -38,8 +34,8 @@ function AppRoutes() {
 
   return (
     <StyledLayout>
-      <NavBar />
-      <GlassContent>
+      {user && <NavBar />}
+      <PageContent>
         <Routes>
           <Route path="/login" element={user ? <Navigate to="/" replace /> : <Login />} />
           <Route path="/" element={<PrivateRoute><Home /></PrivateRoute>} />
@@ -49,7 +45,7 @@ function AppRoutes() {
           <Route path="/top-downloads" element={<PrivateRoute><TopDownloads /></PrivateRoute>} />
           <Route path="/wiki/:md5" element={<PrivateRoute><WikiDetail /></PrivateRoute>} />
         </Routes>
-      </GlassContent>
+      </PageContent>
     </StyledLayout>
   );
 }

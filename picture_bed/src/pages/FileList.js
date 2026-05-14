@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Upload, Card, Row, Col, Table, message, Button, Tooltip, Space, Progress, Tag } from 'antd';
+import { Upload, Card, Table, message, Button, Tooltip, Space, Progress, Tag } from 'antd';
 import {
   UploadOutlined,
   ShareAltOutlined,
@@ -23,24 +23,72 @@ import { useNavigate } from 'react-router-dom';
 import { fetchUserImages, uploadImage, deleteImage, shareFile, cancelShareFile, pvFile } from '../services/images';
 import { describeFile } from '../services/ai';
 
-const UploadCard = styled(Card)`
-  width: 100%;
+const PageHeader = styled.div`
   margin-bottom: 24px;
-  .ant-upload-select {
-    width: 100%;
-    height: 160px;
+  h1 { font-size: 22px; font-weight: 700; color: #0F172A; margin: 0 0 4px; letter-spacing: -0.3px; }
+  p { font-size: 14px; color: #64748B; margin: 0; }
+`;
+
+const UploadCard = styled(Card)`
+  border-radius: 14px;
+  border: 2px dashed #E2E8F0;
+  background: #FAFBFC;
+  transition: border-color 0.2s, background 0.2s;
+  margin-bottom: 24px;
+
+  &:hover {
+    border-color: #2563EB;
+    background: #F8FAFF;
+  }
+
+  .ant-card-body { padding: 20px; }
+  .ant-upload-drag { border: none; background: transparent; height: 140px; }
+  .ant-upload-drag-icon { font-size: 32px; color: #2563EB; margin-bottom: 8px; }
+  .ant-upload-text { font-size: 14px; font-weight: 500; color: #475569; }
+  .ant-upload-hint { font-size: 12px; color: #94A3B8; }
+`;
+
+const StyledTable = styled(Table)`
+  .ant-table {
+    border-radius: 14px;
+    overflow: hidden;
+    border: 1px solid #E2E8F0;
+  }
+
+  .ant-table-thead > tr > th {
+    background: #F8FAFC;
+    border-bottom: 1px solid #E2E8F0;
+    font-size: 12.5px;
+    font-weight: 600;
+    color: #64748B;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    padding: 12px 16px;
+  }
+
+  .ant-table-tbody > tr > td {
+    padding: 12px 16px;
+    border-bottom: 1px solid #F1F5F9;
+    font-size: 13.5px;
+    color: #334155;
+  }
+
+  .ant-table-tbody > tr:hover > td {
+    background: #F8FAFC;
   }
 `;
 
 const getFileIcon = (type) => {
-  if (!type) return <FileOutlined />;
+  if (!type) return <FileOutlined style={{ color: '#94A3B8' }} />;
   const t = type.toLowerCase();
-  if (t === 'pdf') return <FilePdfOutlined style={{ color: '#e53935' }} />;
-  if (['doc', 'docx'].includes(t)) return <FileWordOutlined style={{ color: '#1976d2' }} />;
-  if (['xls', 'xlsx'].includes(t)) return <FileExcelOutlined style={{ color: '#2e7d32' }} />;
-  if (['zip', 'rar', '7z', 'tar', 'gz'].includes(t)) return <FileZipOutlined style={{ color: '#f57c00' }} />;
-  if (['txt', 'md', 'log'].includes(t)) return <FileTextOutlined style={{ color: '#546e7a' }} />;
-  return <FileOutlined />;
+  const colors = { pdf: '#DC2626', doc: '#2563EB', docx: '#2563EB', xls: '#059669', xlsx: '#059669', zip: '#D97706', rar: '#D97706', '7z': '#D97706', tar: '#D97706', gz: '#D97706', txt: '#64748B', md: '#64748B', log: '#64748B' };
+  const color = colors[t] || '#94A3B8';
+  if (t === 'pdf') return <FilePdfOutlined style={{ color }} />;
+  if (['doc', 'docx'].includes(t)) return <FileWordOutlined style={{ color }} />;
+  if (['xls', 'xlsx'].includes(t)) return <FileExcelOutlined style={{ color }} />;
+  if (['zip', 'rar', '7z', 'tar', 'gz'].includes(t)) return <FileZipOutlined style={{ color }} />;
+  if (['txt', 'md', 'log'].includes(t)) return <FileTextOutlined style={{ color }} />;
+  return <FileOutlined style={{ color }} />;
 };
 
 const FileList = () => {
@@ -54,110 +102,63 @@ const FileList = () => {
   const fetchFiles = async () => {
     try {
       const data = await fetchUserImages(user);
-      // 过滤出非图片文件
       const imageExts = ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'svg', 'ico'];
-      const nonImageFiles = data.filter(f => {
-        const ext = (f.type || '').toLowerCase();
-        return !imageExts.includes(ext);
-      });
-      setFiles(nonImageFiles);
+      setFiles(data.filter(f => !imageExts.includes((f.type || '').toLowerCase())));
     } catch (error) {
       console.error('获取文件列表错误：', error);
-      if (error.tokenExpired) {
-        message.error('登录已过期，请重新登录');
-        logout();
-        return;
-      }
-      message.error('获取文件列表失败，请检查网络连接');
+      if (error.tokenExpired) { message.error('登录已过期'); logout(); return; }
+      message.error('获取文件列表失败');
     }
   };
 
   const handleUpload = async (file) => {
-    // 使用 ref 同步判断，防止异步状态更新导致的重复触发
     if (uploadingRef.current) return;
     uploadingRef.current = true;
     try {
-      setUploading(true);
-      setUploadProgress(0);
-      const result = await uploadImage(file, user, (progress) => {
-        setUploadProgress(progress);
-      });
-      if (result.alreadyExists) {
-        message.warning('文件已存在，无需重复上传');
-      } else if (result.instant) {
-        message.success('秒传成功！');
-      } else {
-        message.success('上传成功！');
-      }
+      setUploading(true); setUploadProgress(0);
+      const result = await uploadImage(file, user, (progress) => setUploadProgress(progress));
+      if (result.alreadyExists) message.warning('文件已存在');
+      else if (result.instant) message.success('秒传成功！');
+      else message.success('上传成功！');
       describeFile(file, user).catch(() => {});
       fetchFiles();
     } catch (error) {
       console.error('上传错误：', error);
-      if (error.tokenExpired) {
-        message.error('登录已过期，请重新登录');
-        logout();
-        return;
-      }
+      if (error.tokenExpired) { message.error('登录已过期'); logout(); return; }
       message.error('上传失败！');
-    } finally {
-      uploadingRef.current = false;
-      setUploading(false);
-      setUploadProgress(0);
-    }
+    } finally { uploadingRef.current = false; setUploading(false); setUploadProgress(0); }
   };
 
   const handleDelete = async (record) => {
-    try {
-      await deleteImage(record, user);
-      message.success('删除成功！');
-      fetchFiles();
-    } catch (error) {
-      console.error('删除错误：', error);
-      message.error('删除失败！');
-    }
+    try { await deleteImage(record, user); message.success('删除成功！'); fetchFiles(); }
+    catch (error) { message.error('删除失败！'); }
   };
 
   const handleShare = async (record) => {
-    try {
-      await shareFile(record, user);
-      message.success('分享成功！');
-      fetchFiles();
-    } catch (error) {
-      console.error('分享错误：', error);
-      message.error('分享失败！');
-    }
+    try { await shareFile(record, user); message.success('分享成功！'); fetchFiles(); }
+    catch (error) { message.error('分享失败！'); }
   };
 
   const handleCancelShare = async (record) => {
-    try {
-      await cancelShareFile(record, user);
-      message.success('取消分享成功！');
-      fetchFiles();
-    } catch (error) {
-      console.error('取消分享错误：', error);
-      message.error('取消分享失败！');
-    }
+    try { await cancelShareFile(record, user); message.success('取消分享成功！'); fetchFiles(); }
+    catch (error) { message.error('取消分享失败！'); }
   };
 
   const handleDownload = async (record) => {
-    try {
-      await pvFile(record, user);
-    } catch (e) {
-      // pv更新失败不影响下载
-    }
+    try { await pvFile(record, user); } catch (e) {}
     const link = document.createElement('a');
-    link.href = record.url;
-    link.download = record.name;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    link.href = record.url; link.download = record.name;
+    document.body.appendChild(link); link.click(); document.body.removeChild(link);
   };
 
-  useEffect(() => {
-    if (user && user.token) {
-      fetchFiles();
-    }
-  }, [user]);
+  useEffect(() => { if (user && user.token) { fetchFiles(); } }, [user]);
+
+  const formatSize = (size) => {
+    if (!size) return '-';
+    if (size < 1024) return `${size} B`;
+    if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+    return `${(size / 1024 / 1024).toFixed(2)} MB`;
+  };
 
   const columns = [
     {
@@ -167,83 +168,42 @@ const FileList = () => {
       render: (text, record) => (
         <Space>
           {getFileIcon(record.type)}
-          <span>{text}</span>
+          <span style={{ fontWeight: 500 }}>{text}</span>
         </Space>
       ),
     },
     {
-      title: '类型',
-      dataIndex: 'type',
-      key: 'type',
-      width: 80,
-      render: (t) => (t || '').toUpperCase(),
+      title: '类型', dataIndex: 'type', key: 'type', width: 80,
+      render: (t) => <Tag style={{ borderRadius: 6, background: '#F1F5F9', border: 'none', color: '#475569', fontWeight: 500, fontSize: 11 }}>{(t || '').toUpperCase()}</Tag>,
     },
     {
-      title: '解析状态',
-      dataIndex: 'parse_status',
-      key: 'parse_status',
-      width: 110,
+      title: '解析', dataIndex: 'parse_status', key: 'parse_status', width: 100,
       render: (status) => {
-        const statusMap = {
+        const m = {
           pending:   { color: 'default', icon: <MinusCircleOutlined />, text: '待处理' },
           running:   { color: 'processing', icon: <LoadingOutlined />, text: '解析中' },
           success:   { color: 'success', icon: <CheckCircleOutlined />, text: '已解析' },
           failed:    { color: 'error', icon: <CloseCircleOutlined />, text: '失败' },
-          skipped:   { color: 'warning', icon: <MinusCircleOutlined />, text: '已跳过' },
+          skipped:   { color: 'warning', icon: <MinusCircleOutlined />, text: '跳过' },
         };
-        const s = statusMap[status] || statusMap.pending;
-        return <Tag color={s.color} icon={s.icon}>{s.text}</Tag>;
+        const s = m[status] || m.pending;
+        return <Tag color={s.color} icon={s.icon} style={{ borderRadius: 6 }}>{s.text}</Tag>;
       },
     },
+    { title: '大小', dataIndex: 'size', key: 'size', width: 100, render: (s) => formatSize(s) },
+    { title: '上传时间', dataIndex: 'create_time', key: 'create_time', width: 170 },
+    { title: '下载', dataIndex: 'pv', key: 'pv', width: 70 },
     {
-      title: '大小',
-      dataIndex: 'size',
-      key: 'size',
-      width: 100,
-      render: (size) => {
-        if (!size) return '-';
-        if (size < 1024) return `${size} B`;
-        if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
-        return `${(size / 1024 / 1024).toFixed(2)} MB`;
-      },
-    },
-    {
-      title: '上传时间',
-      dataIndex: 'create_time',
-      key: 'create_time',
-      width: 180,
-    },
-    {
-      title: '下载次数',
-      dataIndex: 'pv',
-      key: 'pv',
-      width: 90,
-    },
-    {
-      title: '操作',
-      key: 'action',
-      width: 160,
+      title: '操作', key: 'action', width: 160,
       render: (_, record) => (
-        <Space>
-          {record.share_status === 1 ? (
-            <Tooltip title="点击取消分享">
-              <Button type="text" icon={<CheckCircleOutlined style={{ color: '#52c41a' }} />} onClick={() => handleCancelShare(record)} />
-            </Tooltip>
-          ) : (
-            <Tooltip title="分享">
-              <Button type="text" icon={<ShareAltOutlined />} onClick={() => handleShare(record)} />
-            </Tooltip>
-          )}
-          <Tooltip title="下载">
-            <Button type="text" icon={<DownloadOutlined />} onClick={() => handleDownload(record)} />
-          </Tooltip>
-          <Tooltip title="删除">
-            <Button type="text" danger icon={<DeleteOutlined />} onClick={() => handleDelete(record)} />
-          </Tooltip>
+        <Space size={4}>
+          {record.share_status === 1
+            ? <Tooltip title="取消分享"><Button type="text" size="small" icon={<CheckCircleOutlined style={{ color: '#059669' }} />} onClick={() => handleCancelShare(record)} /></Tooltip>
+            : <Tooltip title="分享"><Button type="text" size="small" icon={<ShareAltOutlined />} onClick={() => handleShare(record)} /></Tooltip>}
+          <Tooltip title="下载"><Button type="text" size="small" icon={<DownloadOutlined />} onClick={() => handleDownload(record)} /></Tooltip>
+          <Tooltip title="删除"><Button type="text" size="small" danger icon={<DeleteOutlined />} onClick={() => handleDelete(record)} /></Tooltip>
           {record.wiki_ready === 1 && (
-            <Tooltip title="查看 Wiki">
-              <Button type="text" icon={<BookOutlined />} onClick={() => navigate(`/wiki/${record.md5}`)} />
-            </Tooltip>
+            <Tooltip title="Wiki"><Button type="text" size="small" icon={<BookOutlined />} onClick={() => navigate(`/wiki/${record.md5}`)} /></Tooltip>
           )}
         </Space>
       ),
@@ -252,31 +212,21 @@ const FileList = () => {
 
   return (
     <div>
+      <PageHeader>
+        <h1>文件</h1>
+        <p>上传与管理文档、压缩包等非图片文件</p>
+      </PageHeader>
+
       <UploadCard>
-        <Upload.Dragger
-          showUploadList={false}
-          disabled={uploading}
-          beforeUpload={(file) => {
-            handleUpload(file);
-            return false;
-          }}
-        >
-          <p><UploadOutlined style={{ fontSize: 32, color: '#4CAF50' }} /></p>
-          <p>点击或拖拽上传文件</p>
-          <p style={{ color: '#999', fontSize: 12 }}>支持任意类型文件（图片请使用"上传图片"功能），大文件自动分片上传</p>
+        <Upload.Dragger showUploadList={false} disabled={uploading} beforeUpload={(file) => { handleUpload(file); return false; }}>
+          <p className="ant-upload-drag-icon"><UploadOutlined /></p>
+          <p className="ant-upload-text">点击或拖拽上传文件</p>
+          <p className="ant-upload-hint">支持任意类型，大文件自动分片上传</p>
         </Upload.Dragger>
-        {uploading && (
-          <Progress percent={uploadProgress} status="active" style={{ marginTop: 12 }} />
-        )}
+        {uploading && <Progress percent={uploadProgress} status="active" style={{ marginTop: 12 }} strokeColor="#2563EB" />}
       </UploadCard>
 
-      <Table
-        columns={columns}
-        dataSource={files}
-        rowKey="md5"
-        pagination={{ pageSize: 10 }}
-        locale={{ emptyText: '暂无文件，请上传' }}
-      />
+      <StyledTable columns={columns} dataSource={files} rowKey="md5" pagination={{ pageSize: 10 }} locale={{ emptyText: '暂无文件' }} />
     </div>
   );
 };
