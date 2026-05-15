@@ -11,9 +11,10 @@ const Bar = styled.header`
   height: 56px;
   display: flex; align-items: center;
   padding: 0 24px;
-  background: ${p => p.theme.colors.bg}E6;
-  backdrop-filter: saturate(160%) blur(12px);
-  border-bottom: 1px solid ${p => p.theme.colors.border};
+  background: ${p => p.$transparent ? 'transparent' : p.theme.colors.bg + 'E6'};
+  backdrop-filter: ${p => p.$transparent ? 'none' : 'saturate(160%) blur(12px)'};
+  border-bottom: 1px solid ${p => p.$transparent ? 'transparent' : p.theme.colors.border};
+  transition: background 200ms ease, border-color 200ms ease;
 `;
 
 const Crumbs = styled.div`
@@ -73,7 +74,7 @@ const Avatar = styled.span`
   display: grid; place-items: center;
 `;
 
-const Topbar = ({ crumbs = [] }) => {
+const Topbar = ({ crumbs = [], transparent = false }) => {
   const { mode, toggle } = useThemeMode();
   const { user, logout } = useAuth();
   const nav = useNavigate();
@@ -89,8 +90,8 @@ const Topbar = ({ crumbs = [] }) => {
   };
 
   return (
-    <Bar>
-      <Crumbs>
+    <Bar $transparent={transparent}>
+      <Crumbs style={transparent ? { visibility: 'hidden' } : undefined}>
         <Brand>HydraFS</Brand>
         {crumbs.map((c, i) => (
           <React.Fragment key={i}>

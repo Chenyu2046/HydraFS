@@ -10,7 +10,7 @@ const space = {
 };
 
 const radius = {
-  xs: '4px', sm: '6px', md: '8px', lg: '12px', xl: '16px', pill: '999px',
+  xs: '4px', sm: '6px', md: '8px', lg: '12px', xl: '16px', xxl: '28px', pill: '999px',
 };
 
 const fontSize = {
@@ -67,12 +67,21 @@ const dark = {
     overlay: 'rgba(0,0,0,0.6)',
     scrollbar: '#2A2A33',
     grid: 'rgba(255,255,255,0.04)',
+    // pastel hero canvas（dark 主题用低饱和透明叠层）
+    pastelLavender: 'rgba(196, 181, 253, 0.22)',
+    pastelPeach:    'rgba(255, 196, 156, 0.18)',
+    pastelMint:     'rgba(167, 243, 208, 0.16)',
+    pastelIce:      'rgba(186, 230, 253, 0.18)',
+    canvasBase:     '#13131A',
+    chromeBg:       'rgba(20, 20, 26, 0.72)',
+    chromeBorder:   'rgba(255, 255, 255, 0.08)',
   },
   shadow: {
     sm: '0 1px 2px rgba(0,0,0,0.4)',
     md: '0 4px 16px rgba(0,0,0,0.35)',
     lg: '0 12px 32px rgba(0,0,0,0.45)',
     glow: '0 0 0 1px rgba(124,92,255,0.35), 0 8px 24px rgba(124,92,255,0.18)',
+    float: '0 24px 60px -20px rgba(0,0,0,0.6), 0 8px 20px -8px rgba(0,0,0,0.4)',
   },
 };
 
@@ -108,12 +117,21 @@ const light = {
     overlay: 'rgba(0,0,0,0.45)',
     scrollbar: '#D8D8D0',
     grid: 'rgba(0,0,0,0.04)',
+    // pastel hero canvas（light 主题用饱和原色）
+    pastelLavender: '#E5E0FB',
+    pastelPeach:    '#FFD9C2',
+    pastelMint:     '#D0F0DD',
+    pastelIce:      '#D5E8FA',
+    canvasBase:     '#FFFFFF',
+    chromeBg:       'rgba(255, 255, 255, 0.85)',
+    chromeBorder:   'rgba(15, 23, 42, 0.08)',
   },
   shadow: {
     sm: '0 1px 2px rgba(15,23,42,0.06)',
     md: '0 4px 16px rgba(15,23,42,0.06)',
     lg: '0 12px 32px rgba(15,23,42,0.10)',
     glow: '0 0 0 1px rgba(91,91,214,0.30), 0 8px 24px rgba(91,91,214,0.12)',
+    float: '0 24px 60px -20px rgba(15,23,42,0.18), 0 8px 20px -8px rgba(15,23,42,0.10)',
   },
 };
 

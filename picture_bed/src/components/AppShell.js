@@ -17,22 +17,22 @@ const Main = styled.main`
 
 const Content = styled.div`
   flex: 1;
-  padding: 28px 36px 64px;
-  max-width: 1440px;
+  padding: ${p => p.$flush ? '0 0 64px' : '28px 36px 64px'};
+  max-width: ${p => p.$flush ? 'none' : '1440px'};
   width: 100%;
   margin: 0 auto;
 
   @media (max-width: 768px) {
-    padding: 20px 16px 48px;
+    padding: ${p => p.$flush ? '0 0 48px' : '20px 16px 48px'};
   }
 `;
 
-const AppShell = ({ children, crumbs }) => (
+const AppShell = ({ children, crumbs, transparentTopbar = false, flushContent = false }) => (
   <Shell>
     <Sidebar />
     <Main>
-      <Topbar crumbs={crumbs} />
-      <Content className="hydra-enter">{children}</Content>
+      <Topbar crumbs={crumbs} transparent={transparentTopbar} />
+      <Content className="hydra-enter" $flush={flushContent}>{children}</Content>
     </Main>
   </Shell>
 );

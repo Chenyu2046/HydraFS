@@ -32,7 +32,17 @@ const Shell = ({ children }) => {
     if (loc.pathname.startsWith('/wiki/')) crumbs = ['Knowledge', 'Wiki'];
     else crumbs = [];
   }
-  return <AppShell crumbs={crumbs}>{children}</AppShell>;
+  // Overview 首页：让 Topbar 透明、内容区贴边，给 HeroCanvas 全宽 pastel 画布
+  const isOverview = loc.pathname === '/';
+  return (
+    <AppShell
+      crumbs={crumbs}
+      transparentTopbar={isOverview}
+      flushContent={isOverview}
+    >
+      {children}
+    </AppShell>
+  );
 };
 
 const Fallback = () => (
