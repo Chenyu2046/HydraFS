@@ -1,144 +1,241 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Card, Tag, Descriptions, List, Typography, Spin, message, Empty, Button, Space } from 'antd';
-import { FileOutlined, LinkOutlined, ArrowLeftOutlined } from '@ant-design/icons';
 import styled from '@emotion/styled';
+import { Tag, Button, Spin, Empty, message } from 'antd';
+import {
+  ArrowLeftOutlined, FileOutlined, NodeIndexOutlined, LinkOutlined,
+  BookOutlined,
+} from '@ant-design/icons';
 import { useAuth } from '../contexts/AuthContext';
 import { fetchWiki, fetchBacklinks } from '../services/ai';
+import { Panel, PanelHeader, PanelBody, Pill } from '../components/primitives';
 
-const { Title, Paragraph, Text } = Typography;
+const Layout = styled.div`
+  display: grid;
+  grid-template-columns: 1fr 320px;
+  gap: 18px;
 
-const PageHeader = styled.div`
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 24px;
+  @media (max-width: 980px) { grid-template-columns: 1fr; }
 `;
 
-const StyledCard = styled(Card)`
-  border-radius: 14px;
-  border: 1px solid #E2E8F0;
-  box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+const Toolbar = styled.div`
+  display: flex; align-items: center; gap: 8px;
   margin-bottom: 16px;
-
-  .ant-card-head {
-    border-bottom: 1px solid #F1F5F9;
-    padding: 16px 24px;
-    .ant-card-head-title { font-size: 15px; font-weight: 600; color: #0F172A; }
-  }
-  .ant-card-body { padding: 20px 24px; }
 `;
 
-const InnerCard = styled(Card)`
-  border-radius: 10px;
-  border: 1px solid #F1F5F9;
-  background: #FAFBFC;
-  margin-bottom: 14px;
+const Title = styled.h1`
+  margin: 0 0 8px;
+  font-size: 28px; font-weight: 700;
+  letter-spacing: -0.5px;
+  color: ${p => p.theme.colors.text};
+`;
 
-  .ant-card-head {
-    border-bottom: none;
-    padding: 12px 16px;
-    min-height: auto;
-    .ant-card-head-title { font-size: 13.5px; font-weight: 600; color: #475569; }
+const Meta = styled.div`
+  display: flex; gap: 8px; flex-wrap: wrap;
+  font-family: ${p => p.theme.fontFamily.mono};
+  font-size: 11.5px;
+  color: ${p => p.theme.colors.text2};
+  margin-bottom: 18px;
+  span.kv {
+    padding: 2px 8px;
+    border: 1px solid ${p => p.theme.colors.border};
+    border-radius: 999px;
+    background: ${p => p.theme.colors.panel2};
   }
-  .ant-card-body { padding: 8px 16px 14px; }
+`;
+
+const Block = styled.section`
+  margin-bottom: 18px;
+  h3 {
+    font-size: 11.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: ${p => p.theme.colors.text3};
+    margin: 0 0 10px;
+    font-weight: 600;
+    display: flex; align-items: center; gap: 6px;
+  }
+`;
+
+const Summary = styled.div`
+  background: ${p => p.theme.colors.panel};
+  border: 1px solid ${p => p.theme.colors.border};
+  border-radius: 12px;
+  padding: 18px 22px;
+  font-size: 14.5px;
+  line-height: 1.75;
+  color: ${p => p.theme.colors.text};
+  white-space: pre-wrap;
+`;
+
+const Outline = styled.ol`
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: oo;
+  li {
+    counter-increment: oo;
+    padding: 10px 0 10px 30px;
+    border-bottom: 1px dashed ${p => p.theme.colors.border};
+    color: ${p => p.theme.colors.text};
+    font-size: 13.5px;
+    position: relative;
+    line-height: 1.55;
+    &::before {
+      content: counter(oo, decimal-leading-zero);
+      position: absolute; left: 0; top: 10px;
+      font-family: ${p => p.theme.fontFamily.mono};
+      font-size: 11px;
+      color: ${p => p.theme.colors.text3};
+      letter-spacing: 0.4px;
+    }
+    &:last-child { border-bottom: none; }
+  }
+`;
+
+const Backlink = styled.button`
+  border: 1px solid ${p => p.theme.colors.border};
+  background: ${p => p.theme.colors.panel};
+  border-radius: 10px;
+  padding: 12px 14px;
+  text-align: left;
+  width: 100%;
+  cursor: pointer;
+  margin-bottom: 8px;
+  color: inherit; font: inherit;
+  transition: all ${p => p.theme.duration.base} ${p => p.theme.ease.out};
+
+  &:hover {
+    border-color: ${p => p.theme.colors.accentBorder};
+    background: ${p => p.theme.colors.accentSoft};
+    transform: translateY(-1px);
+  }
+  .concept {
+    font-size: 11.5px;
+    color: ${p => p.theme.colors.accent};
+    font-family: ${p => p.theme.fontFamily.mono};
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+  }
+  .ref {
+    font-size: 13px;
+    color: ${p => p.theme.colors.text};
+    margin-top: 4px;
+    display: flex; align-items: center; gap: 8px;
+    word-break: break-all;
+  }
 `;
 
 const WikiDetail = () => {
   const { md5 } = useParams();
-  const navigate = useNavigate();
+  const nav = useNavigate();
   const { user, logout } = useAuth();
   const [wiki, setWiki] = useState(null);
   const [backlinks, setBacklinks] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
-  useEffect(() => { if (user && md5) { loadWikiData(); } }, [md5, user]);
-
-  const loadWikiData = async () => {
+  useEffect(() => {
+    if (!user || !md5) return;
     setLoading(true); setError(null);
-    try {
-      const [wikiData, blData] = await Promise.all([fetchWiki(md5, user), fetchBacklinks(md5, user)]);
-      setWiki(wikiData); setBacklinks(blData || []);
-    } catch (e) {
-      if (e.tokenExpired) { message.error('登录已过期'); logout(); return; }
-      setError(e.message);
-    } finally { setLoading(false); }
-  };
+    Promise.all([fetchWiki(md5, user), fetchBacklinks(md5, user)])
+      .then(([w, b]) => { setWiki(w); setBacklinks(b || []); })
+      .catch(e => {
+        if (e.tokenExpired) { message.error('登录已过期'); logout(); return; }
+        setError(e.message || '加载失败');
+      })
+      .finally(() => setLoading(false));
+  }, [md5, user, logout]);
 
-  if (loading) return <div style={{ textAlign: 'center', padding: 80 }}><Spin size="large" /></div>;
-  if (error) return <Empty description={error} />;
-  if (!wiki) return <Empty description="Wiki 页面不存在" />;
+  const tags = useMemo(() => { try { return wiki?.tags ? JSON.parse(wiki.tags) : []; } catch { return []; } }, [wiki]);
+  const outline = useMemo(() => { try { return wiki?.outline ? JSON.parse(wiki.outline) : []; } catch { return []; } }, [wiki]);
+  const links = wiki?.links || [];
 
-  const parseTags = (s) => { try { return JSON.parse(s); } catch { return []; } };
-  const parseOutline = (s) => { try { return JSON.parse(s); } catch { return []; } };
-
-  const tags = parseTags(wiki.tags);
-  const outline = parseOutline(wiki.outline);
-  const links = wiki.links || [];
+  if (loading) return <div style={{ padding: 80, textAlign: 'center' }}><Spin /></div>;
+  if (error)   return <Empty description={error} />;
+  if (!wiki)   return <Empty description="该 Wiki 节点不存在" />;
 
   return (
     <div>
-      <PageHeader>
-        <Button icon={<ArrowLeftOutlined />} onClick={() => navigate(-1)}>返回</Button>
-        <Button icon={<FileOutlined />} onClick={() => navigate('/files')}>源文件</Button>
-      </PageHeader>
+      <Toolbar>
+        <Button icon={<ArrowLeftOutlined />} onClick={() => nav(-1)}>返回</Button>
+        <Button icon={<FileOutlined />} onClick={() => nav('/files')}>所有文件</Button>
+        <Button icon={<NodeIndexOutlined />} onClick={() => nav('/graph?focus=' + encodeURIComponent(md5))}>
+          在图谱中查看
+        </Button>
+        <span style={{ flex: 1 }} />
+        <Pill><BookOutlined /> WIKI</Pill>
+      </Toolbar>
 
-      <StyledCard>
-        <Title level={3} style={{ margin: '0 0 12px', fontWeight: 700 }}>{wiki.title || '未命名 Wiki'}</Title>
-        <Descriptions column={1} size="small" style={{ marginBottom: 16 }} labelStyle={{ color: '#94A3B8', fontWeight: 500 }}>
-          <Descriptions.Item label="源文件">{wiki.source?.filename || '-'}</Descriptions.Item>
-          <Descriptions.Item label="类型">{(wiki.source?.type || '').toUpperCase()}</Descriptions.Item>
-        </Descriptions>
+      <Layout>
+        <div>
+          <Title>{wiki.title || '未命名 Wiki'}</Title>
+          <Meta>
+            <span className="kv">SOURCE · {wiki.source?.filename || '-'}</span>
+            <span className="kv">TYPE · {(wiki.source?.type || '').toUpperCase() || '-'}</span>
+            <span className="kv">MD5 · {(md5 || '').slice(0, 12)}…</span>
+          </Meta>
 
-        {tags.length > 0 && (
-          <div style={{ marginBottom: 16 }}>
-            {tags.map((t, i) => <Tag key={i} color="blue" style={{ borderRadius: 6 }}>{t}</Tag>)}
-          </div>
-        )}
+          {tags.length > 0 && (
+            <Block>
+              <h3>Tags</h3>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                {tags.map((t, i) => <Tag key={i} color="purple" bordered={false}>#{t}</Tag>)}
+              </div>
+            </Block>
+          )}
 
-        {wiki.summary && (
-          <InnerCard title="摘要" size="small">
-            <Paragraph style={{ margin: 0, fontSize: 14, lineHeight: 1.7, color: '#334155' }}>{wiki.summary}</Paragraph>
-          </InnerCard>
-        )}
+          {wiki.summary && (
+            <Block>
+              <h3>Summary</h3>
+              <Summary>{wiki.summary}</Summary>
+            </Block>
+          )}
 
-        {outline.length > 0 && (
-          <InnerCard title="大纲" size="small">
-            <List size="small" dataSource={outline} renderItem={item => <List.Item style={{ padding: '6px 0', fontSize: 13.5 }}>{item}</List.Item>} />
-          </InnerCard>
-        )}
+          {outline.length > 0 && (
+            <Block>
+              <h3>Outline</h3>
+              <Panel><PanelBody $pad="6px 18px">
+                <Outline>{outline.map((it, i) => <li key={i}>{it}</li>)}</Outline>
+              </PanelBody></Panel>
+            </Block>
+          )}
 
-        {links.length > 0 && (
-          <InnerCard title="概念链接" size="small">
-            {links.map((link, i) => <Tag key={i} icon={<LinkOutlined />} color="green" style={{ borderRadius: 6, marginBottom: 4 }}>{link}</Tag>)}
-          </InnerCard>
-        )}
-      </StyledCard>
+          {links.length > 0 && (
+            <Block>
+              <h3><LinkOutlined /> Concept Links</h3>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                {links.map((l, i) => <Tag key={i} bordered={false} color="blue">{l}</Tag>)}
+              </div>
+            </Block>
+          )}
+        </div>
 
-      {backlinks.length > 0 && (
-        <StyledCard title="反向链接">
-          {backlinks.map((item, i) => (
-            <InnerCard key={i} size="small">
-              <Text strong style={{ fontSize: 13.5 }}>{item.concept}</Text>
-              <List size="small" style={{ marginTop: 8 }}
-                dataSource={item.referenced_by || []}
-                renderItem={ref => (
-                  <List.Item style={{ padding: '6px 0' }}>
-                    <FileOutlined style={{ marginRight: 8, color: '#94A3B8' }} />
-                    <Button type="link" style={{ padding: 0, fontSize: 13.5 }} onClick={() => navigate(`/wiki/${ref.md5}`)}>
-                      {ref.filename}
-                    </Button>
-                  </List.Item>
-                )} />
-            </InnerCard>
-          ))}
-        </StyledCard>
-      )}
-
-      {backlinks.length === 0 && (
-        <StyledCard><Empty description="暂无反向链接" /></StyledCard>
-      )}
+        <aside>
+          <Panel>
+            <PanelHeader>
+              <h3>Backlinks</h3>
+              <span className="subtitle">{backlinks.length}</span>
+            </PanelHeader>
+            <PanelBody $pad="14px">
+              {backlinks.length === 0 ? (
+                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={<span style={{ fontSize: 12 }}>暂无反向链接</span>} />
+              ) : (
+                backlinks.map((bl, i) => (
+                  <div key={i} style={{ marginBottom: 14 }}>
+                    {(bl.referenced_by || []).map((ref, j) => (
+                      <Backlink key={j} onClick={() => nav('/wiki/' + ref.md5)}>
+                        <div className="concept">#{bl.concept}</div>
+                        <div className="ref"><FileOutlined />{ref.filename}</div>
+                      </Backlink>
+                    ))}
+                  </div>
+                ))
+              )}
+            </PanelBody>
+          </Panel>
+        </aside>
+      </Layout>
     </div>
   );
 };

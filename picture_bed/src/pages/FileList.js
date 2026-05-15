@@ -1,224 +1,152 @@
-import React, { useState, useEffect } from 'react';
-import { Upload, Card, Table, message, Button, Tooltip, Space, Progress, Tag } from 'antd';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Input, Segmented, Button, Table, Tag, message, Space, Tooltip, Empty, Skeleton } from 'antd';
 import {
-  UploadOutlined,
-  DeleteOutlined,
-  DownloadOutlined,
-  ShareAltOutlined,
-  CheckCircleOutlined,
-  FileOutlined,
-  FileTextOutlined,
-  FileImageOutlined,
-  FilePdfOutlined,
-  FileZipOutlined,
-  FileWordOutlined,
-  FileExcelOutlined,
-  FilePptOutlined,
-  PlaySquareOutlined,
-  CustomerServiceOutlined,
-  SyncOutlined
+  SearchOutlined, AppstoreOutlined, UnorderedListOutlined, ReloadOutlined,
+  ShareAltOutlined, DeleteOutlined, DownloadOutlined, CheckCircleOutlined,
+  FileOutlined, FilePdfOutlined, FileWordOutlined, FileExcelOutlined,
+  FileZipOutlined, FileTextOutlined, FileImageOutlined, CodeOutlined,
 } from '@ant-design/icons';
 import styled from '@emotion/styled';
+import { useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { useNavigate } from 'react-router-dom';
 import { fetchUserImages, uploadImage, deleteImage, shareFile, cancelShareFile, pvFile } from '../services/images';
 import { describeFile } from '../services/ai';
+import QuickUpload from '../components/QuickUpload';
+import FileGrid from '../components/FileGrid';
+import FileDrawer from '../components/FileDrawer';
+import { Panel, PanelHeader, PanelBody, SectionTitle } from '../components/primitives';
+import { classifyFileType } from '../mock/graph';
 
-const PageHeader = styled.div`
-  margin-bottom: 24px;
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-end;
-  
-  .title-area {
-    h1 { font-size: 28px; font-weight: 700; color: #1D1D1F; margin: 0 0 6px; letter-spacing: -0.5px; }                                                                        p { font-size: 15px; color: #86868B; margin: 0; }
+// ====== Styled ======
+const PageHead = styled.div`
+  display: flex; align-items: flex-end; justify-content: space-between;
+  margin-bottom: 18px;
+  h1 {
+    margin: 0 0 4px;
+    font-size: 24px; font-weight: 700;
+    letter-spacing: -0.4px;
+    color: ${p => p.theme.colors.text};
+  }
+  p {
+    margin: 0; font-size: 13px;
+    color: ${p => p.theme.colors.text2};
   }
 `;
 
 const Toolbar = styled.div`
-  display: flex;
-  gap: 12px;
-  margin-bottom: 24px;
-  background: #ffffff;
-  padding: 16px 20px;
-  border-radius: 16px;
-  box-shadow: 0 4px 20px rgba(0,0,0,0.02);
-`;
+  display: flex; align-items: center; gap: 10px;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
 
-const StyledTable = styled(Table)`
-  .ant-table-wrapper {
-    background: #ffffff;
-    border-radius: 20px;
-    box-shadow: 0 4px 24px rgba(0,0,0,0.04);
-    overflow: hidden;
-  }
-  
-  .ant-table {
-    background: transparent;
-  }
-
-  .ant-table-thead > tr > th {
-    background: #F5F5F7;
-    color: #86868B;
-    font-weight: 500;
-    border-bottom: 1px solid rgba(0,0,0,0.04);
-    padding: 16px 24px;
-    
-    &::before {
-      display: none !important;
-    }
-  }
-
-  .ant-table-tbody > tr > td {
-    padding: 16px 24px;
-    border-bottom: 1px solid #F5F5F7;
-    transition: background 0.2s ease;
-  }
-
-  .ant-table-tbody > tr:hover > td {
-    background: #FAFAFC;
-  }
-  
-  .ant-table-pagination {
-    margin: 16px 24px !important;
+  .search { flex: 1; min-width: 240px; max-width: 420px; }
+  .ant-input-affix-wrapper {
+    background: ${p => p.theme.colors.panel};
+    border-color: ${p => p.theme.colors.border};
+    border-radius: 8px;
   }
 `;
 
-const ActionButton = styled(Button)`
-  border: none;
-  background: transparent;
-  color: #86868B;
-  box-shadow: none;
-  
-  &:hover {
-    color: #007AFF;
-    background: rgba(0, 122, 255, 0.08);
-  }
-`;
-
-const getFileIcon = (type) => {
-  if (!type) return <FileOutlined style={{ color: '#94A3B8' }} />;
-  const t = type.toLowerCase();
-  const colors = { pdf: '#DC2626', doc: '#2563EB', docx: '#2563EB', xls: '#059669', xlsx: '#059669', zip: '#D97706', rar: '#D97706', '7z': '#D97706', tar: '#D97706', gz: '#D97706', txt: '#64748B', md: '#64748B', log: '#64748B' };
-  const color = colors[t] || '#94A3B8';
-  if (t === 'pdf') return <FilePdfOutlined style={{ color }} />;
-  if (['doc', 'docx'].includes(t)) return <FileWordOutlined style={{ color }} />;
-  if (['xls', 'xlsx'].includes(t)) return <FileExcelOutlined style={{ color }} />;
-  if (['zip', 'rar', '7z', 'tar', 'gz'].includes(t)) return <FileZipOutlined style={{ color }} />;
-  if (['txt', 'md', 'log'].includes(t)) return <FileTextOutlined style={{ color }} />;
-  return <FileOutlined style={{ color }} />;
+const TYPE_ICON = {
+  pdf:  <FilePdfOutlined />,   doc:  <FileWordOutlined />,  docx: <FileWordOutlined />,
+  xls:  <FileExcelOutlined />, xlsx: <FileExcelOutlined />,
+  zip:  <FileZipOutlined />,   rar:  <FileZipOutlined />,   '7z': <FileZipOutlined />,
+  tar:  <FileZipOutlined />,   gz:   <FileZipOutlined />,
+  txt:  <FileTextOutlined />,  md:   <FileTextOutlined />,  log: <FileTextOutlined />,
+  png:  <FileImageOutlined />, jpg:  <FileImageOutlined />, jpeg: <FileImageOutlined />,
+  gif:  <FileImageOutlined />, webp: <FileImageOutlined />, svg:  <FileImageOutlined />,
+  c:    <CodeOutlined />,      cpp:  <CodeOutlined />,      h:    <CodeOutlined />,
+  js:   <CodeOutlined />,      ts:   <CodeOutlined />,      py:   <CodeOutlined />,
 };
 
+const formatBytes = (b) => {
+  if (!b) return '-';
+  if (b < 1024) return b + ' B';
+  if (b < 1024*1024) return (b/1024).toFixed(1) + ' KB';
+  if (b < 1024**3) return (b/1024/1024).toFixed(2) + ' MB';
+  return (b/1024**3).toFixed(2) + ' GB';
+};
+
+const FILTERS = [
+  { value: 'all',     label: '全部' },
+  { value: 'image',   label: '图片' },
+  { value: 'doc',     label: '文档' },
+  { value: 'code',    label: '代码' },
+  { value: 'archive', label: '压缩' },
+  { value: 'other',   label: '其他' },
+];
+
 const FileList = () => {
-  const [files, setFiles] = useState([]);
-  const [uploading, setUploading] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState(0);
   const { user, logout } = useAuth();
-  const navigate = useNavigate();
-  const uploadingRef = React.useRef(false);
+  const loc = useLocation();
+  const initialFilter = useMemo(() => {
+    const sp = new URLSearchParams(loc.search);
+    return sp.get('type') || 'all';
+  }, [loc.search]);
 
-  const fetchFiles = async () => {
+  const [files, setFiles] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [view, setView] = useState('grid');
+  const [filter, setFilter] = useState(initialFilter);
+  const [keyword, setKeyword] = useState('');
+  const [drawerFile, setDrawerFile] = useState(null);
+
+  const load = async () => {
+    setLoading(true);
     try {
-      const data = await fetchUserImages(user);
-      const imageExts = ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'svg', 'ico'];
-      setFiles(data.filter(f => !imageExts.includes((f.type || '').toLowerCase())));
-    } catch (error) {
-      console.error('获取文件列表错误：', error);
-      if (error.tokenExpired) { message.error('登录已过期'); logout(); return; }
+      // 文件主页：先拉 100 兜底，后续可接前端分页/虚拟滚动
+      const data = await fetchUserImages(user, { count: 100 });
+      setFiles(data || []);
+    } catch (e) {
+      if (e.tokenExpired) { message.error('登录已过期'); logout(); return; }
       message.error('获取文件列表失败');
+    } finally { setLoading(false); }
+  };
+
+  useEffect(() => { if (user?.token) load(); /* eslint-disable-next-line */ }, [user]);
+
+  const filtered = useMemo(() => {
+    let arr = files;
+    if (filter !== 'all') arr = arr.filter(f => classifyFileType(f.type) === filter);
+    if (keyword.trim()) {
+      const k = keyword.toLowerCase();
+      arr = arr.filter(f => (f.file_name || f.name || '').toLowerCase().includes(k));
     }
-  };
+    return arr;
+  }, [files, filter, keyword]);
 
-  const handleUpload = async (file) => {
-    if (uploadingRef.current) return;
-    uploadingRef.current = true;
-    try {
-      setUploading(true); setUploadProgress(0);
-      const result = await uploadImage(file, user, (progress) => setUploadProgress(progress));
-      if (result.alreadyExists) message.warning('文件已存在');
-      else if (result.instant) message.success('秒传成功！');
-      else message.success('上传成功！');
-      describeFile(file, user).catch(() => {});
-      fetchFiles();
-    } catch (error) {
-      console.error('上传错误：', error);
-      if (error.tokenExpired) { message.error('登录已过期'); logout(); return; }
-      message.error('上传失败！');
-    } finally { uploadingRef.current = false; setUploading(false); setUploadProgress(0); }
-  };
-
-  const handleDelete = async (record) => {
-    try { await deleteImage(record, user); message.success('删除成功！'); fetchFiles(); }
-    catch (error) { message.error('删除失败！'); }
-  };
-
-  const handleShare = async (record) => {
-    try { await shareFile(record, user); message.success('分享成功！'); fetchFiles(); }
-    catch (error) { message.error('分享失败！'); }
-  };
-
-  const handleCancelShare = async (record) => {
-    try { await cancelShareFile(record, user); message.success('取消分享成功！'); fetchFiles(); }
-    catch (error) { message.error('取消分享失败！'); }
-  };
-
-  const handleDownload = async (record) => {
-    try { await pvFile(record, user); } catch (e) {}
-    const link = document.createElement('a');
-    link.href = record.url; link.download = record.name;
+  const handleShare       = async (r) => { try { await shareFile(r, user); message.success('分享成功'); load(); if (drawerFile?.md5 === r.md5) setDrawerFile({ ...r, share_status: 1 }); } catch { message.error('分享失败'); } };
+  const handleCancelShare = async (r) => { try { await cancelShareFile(r, user); message.success('取消分享成功'); load(); if (drawerFile?.md5 === r.md5) setDrawerFile({ ...r, share_status: 0 }); } catch { message.error('取消失败'); } };
+  const handleDelete      = async (r) => { try { await deleteImage(r, user); message.success('删除成功'); setDrawerFile(null); load(); } catch { message.error('删除失败'); } };
+  const handleDownload    = async (r) => {
+    try { await pvFile(r, user); } catch {}
+    const link = document.createElement('a'); link.href = r.url; link.download = r.file_name || r.name;
     document.body.appendChild(link); link.click(); document.body.removeChild(link);
-  };
-
-  useEffect(() => { if (user && user.token) { fetchFiles(); } }, [user]);
-
-  const formatSize = (size) => {
-    if (!size) return '-';
-    if (size < 1024) return `${size} B`;
-    if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
-    return `${(size / 1024 / 1024).toFixed(2)} MB`;
   };
 
   const columns = [
     {
-      title: '文件名',
-      dataIndex: 'name',
-      key: 'name',
-      render: (text, record) => (
-        <Space size="middle">
-          {getFileIcon(record)}
-          <span style={{ fontWeight: 500, color: '#1D1D1F' }}>{text}</span>
-          {record.share_status === 1 && <Tag color="blue" bordered={false}>已分享</Tag>}
-          {record.wiki_ready === 1 && <Tag color="cyan" bordered={false} style={{ cursor: 'pointer' }} onClick={() => navigate(`/wiki/${record.md5}`)}>Wiki</Tag>}                  </Space>
+      title: '文件名', dataIndex: 'file_name', key: 'name',
+      render: (t, r) => (
+        <Space size={10}>
+          <span style={{ fontSize: 16, color: 'var(--accent)' }}>{TYPE_ICON[(r.type||'').toLowerCase()] || <FileOutlined />}</span>
+          <span style={{ fontWeight: 500 }}>{t || r.name}</span>
+          {r.share_status === 1 && <Tag color="blue" bordered={false}>已分享</Tag>}
+          {r.wiki_ready === 1 && <Tag color="purple" bordered={false}>Wiki</Tag>}
+        </Space>
       ),
     },
+    { title: '类型', dataIndex: 'type', key: 'type', width: 90, render: (t) => <span className="text-mono" style={{ opacity: 0.75 }}>{(t || '').toUpperCase()}</span> },
+    { title: '大小', dataIndex: 'size', key: 'size', width: 110, render: (s) => <span className="text-mono">{formatBytes(s)}</span> },
+    { title: '上传时间', dataIndex: 'create_time', key: 'time', width: 180 },
     {
-      title: '大小',
-      dataIndex: 'size',
-      key: 'size',
-      render: (size) => <span style={{ color: '#86868B' }}>{formatSize(size)}</span>,
-    },
-    {
-      title: '上传时间',
-      dataIndex: 'uploadTime',
-      key: 'uploadTime',
-      render: (text) => <span style={{ color: '#86868B' }}>{text}</span>,
-    },
-    {
-      title: '操作',
-      key: 'action',
-      render: (_, record) => (
-        <Space size="small">
-          {record.share_status === 1 ? (
-            <Tooltip title="取消分享">
-              <ActionButton icon={<CheckCircleOutlined style={{ color: '#34C759' }} />} onClick={() => handleCancelShare(record)} />                                                  </Tooltip>
-          ) : (
-            <Tooltip title="分享">
-              <ActionButton icon={<ShareAltOutlined />} onClick={() => handleShare(record)} />                                                                                        </Tooltip>
-          )}
-          <Tooltip title="下载">
-            <ActionButton icon={<DownloadOutlined />} onClick={() => handleDownload(record)} />                                                                                     </Tooltip>
-          <Tooltip title="删除">
-            <ActionButton icon={<DeleteOutlined />} onClick={() => handleDelete(record)} style={{ color: '#FF3B30' }} className="delete-btn" />                                     </Tooltip>
+      title: '操作', key: 'action', width: 160, align: 'right',
+      render: (_, r) => (
+        <Space size={2}>
+          <Tooltip title="下载"><Button type="text" size="small" icon={<DownloadOutlined />} onClick={(e) => { e.stopPropagation(); handleDownload(r); }} /></Tooltip>
+          {r.share_status === 1
+            ? <Tooltip title="取消分享"><Button type="text" size="small" icon={<CheckCircleOutlined />} onClick={(e) => { e.stopPropagation(); handleCancelShare(r); }} /></Tooltip>
+            : <Tooltip title="分享"><Button type="text" size="small" icon={<ShareAltOutlined />} onClick={(e) => { e.stopPropagation(); handleShare(r); }} /></Tooltip>}
+          <Tooltip title="删除"><Button type="text" size="small" danger icon={<DeleteOutlined />} onClick={(e) => { e.stopPropagation(); handleDelete(r); }} /></Tooltip>
         </Space>
       ),
     },
@@ -226,32 +154,76 @@ const FileList = () => {
 
   return (
     <div>
-      <PageHeader>
-        <div className="title-area">
-          <h1>文件管理</h1>
-          <p>管理您的所有文件</p>
+      <PageHead>
+        <div>
+          <h1>Files</h1>
+          <p>统一管理你云端的所有文件 · {files.length} 个 · {formatBytes(files.reduce((s, f) => s + (f.size || 0), 0))}</p>
         </div>
-      </PageHeader>
+      </PageHead>
+
+      <QuickUpload onDone={load} />
+
+      <SectionTitle><h2>All Files</h2><span>支持搜索 / 类型筛选 / 网格与表格双视图</span></SectionTitle>
 
       <Toolbar>
-        <Upload
-          customRequest={handleUpload}
-          showUploadList={false}
-          disabled={uploading}
-        >
-          <Button type="primary" icon={<UploadOutlined />} loading={uploading} size="large" style={{ borderRadius: '12px' }}>                                                           上传文件
-          </Button>
-        </Upload>
-        <Button icon={<SyncOutlined />} onClick={fetchFiles} size="large" style={{ borderRadius: '12px' }}>刷新</Button>                                                              </Toolbar>
+        <Input
+          className="search"
+          prefix={<SearchOutlined style={{ opacity: 0.5 }} />}
+          placeholder="按文件名搜索…"
+          value={keyword}
+          onChange={e => setKeyword(e.target.value)}
+          allowClear
+        />
+        <Segmented
+          options={FILTERS}
+          value={filter}
+          onChange={setFilter}
+        />
+        <span style={{ flex: 1 }} />
+        <Segmented
+          options={[
+            { value: 'grid', icon: <AppstoreOutlined />, label: 'Grid' },
+            { value: 'list', icon: <UnorderedListOutlined />, label: 'List' },
+          ]}
+          value={view}
+          onChange={setView}
+        />
+        <Tooltip title="刷新"><Button icon={<ReloadOutlined />} onClick={load} /></Tooltip>
+      </Toolbar>
 
-      {uploading && (
-        <Card style={{ marginBottom: 20, borderRadius: 16, border: 'none', boxShadow: 
-'0 4px 20px rgba(0,0,0,0.02)' }}>                                                               <div>正在上传...</div>
-          <Progress percent={uploadProgress} strokeColor="#007AFF" />
-        </Card>
+      {loading && files.length === 0 ? (
+        <Skeleton active paragraph={{ rows: 6 }} />
+      ) : filtered.length === 0 ? (
+        <Panel>
+          <PanelBody $pad="48px">
+            <Empty description={keyword ? `没有匹配 "${keyword}" 的文件` : '暂无文件，先上传一个试试'} />
+          </PanelBody>
+        </Panel>
+      ) : view === 'grid' ? (
+        <FileGrid files={filtered} onPick={setDrawerFile} />
+      ) : (
+        <Panel style={{ overflow: 'hidden' }}>
+          <Table
+            columns={columns}
+            dataSource={filtered}
+            rowKey="md5"
+            pagination={{ pageSize: 12, showSizeChanger: false, size: 'small' }}
+            onRow={(r) => ({ onClick: () => setDrawerFile(r), style: { cursor: 'pointer' } })}
+            size="middle"
+          />
+        </Panel>
       )}
 
-      <StyledTable columns={columns} dataSource={files} rowKey="md5" pagination={{ pageSize: 10 }} locale={{ emptyText: '暂无文件' }} />                                          </div>
+      <FileDrawer
+        open={!!drawerFile}
+        file={drawerFile}
+        onClose={() => setDrawerFile(null)}
+        onShare={handleShare}
+        onCancelShare={handleCancelShare}
+        onDelete={handleDelete}
+        onDownload={handleDownload}
+      />
+    </div>
   );
 };
 

@@ -1,8 +1,17 @@
 import { API_CONFIG } from '../config';
 import SparkMD5 from 'spark-md5';
 
-export const fetchUserImages = async (user) => {
-  const response = await fetch(`${API_CONFIG.BASE_URL}${API_CONFIG.ENDPOINTS.MY_FILES}?cmd=normal`, {
+/**
+ * 获取当前用户文件列表
+ * @param {object} user
+ * @param {object} [opts]
+ * @param {number} [opts.count=20]  分页大小（FileList=20 / Home=12 / Knowledge=Graph=200）
+ * @param {number} [opts.start=0]   起始偏移
+ * @param {'normal'|'pvasc'|'pvdesc'} [opts.cmd='normal']
+ */
+export const fetchUserImages = async (user, opts = {}) => {
+  const { count = 20, start = 0, cmd = 'normal' } = opts;
+  const response = await fetch(`${API_CONFIG.BASE_URL}${API_CONFIG.ENDPOINTS.MY_FILES}?cmd=${cmd}`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json'
@@ -10,8 +19,8 @@ export const fetchUserImages = async (user) => {
     body: JSON.stringify({
       token: user.token,
       user: user.username,
-      count: 20,
-      start: 0
+      count,
+      start
     })
   });
 
