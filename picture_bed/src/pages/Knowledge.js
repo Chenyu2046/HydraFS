@@ -9,6 +9,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { fetchUserImages } from '../services/images';
 import { fetchApiKey, saveApiKey, describeFileByMd5, rebuildIndex } from '../services/ai';
 import { Panel, PanelHeader, PanelBody, SectionTitle, Pill } from '../components/primitives';
+import { copy } from '../lib/copy';
 
 const PageHead = styled.div`
   margin-bottom: 18px;
@@ -109,11 +110,10 @@ const Knowledge = () => {
   const load = async () => {
     setLoading(true);
     try {
-      // 知识页要批量重建索引，尽量拉全
       const data = await fetchUserImages(user, { count: 200 });
       setFiles(data || []);
     } catch (e) {
-      if (e.tokenExpired) { message.error('登录已过期'); logout(); return; }
+      if (e.tokenExpired) { message.error(copy.auth.expired); logout(); return; }
     } finally { setLoading(false); }
   };
 
@@ -133,15 +133,15 @@ const Knowledge = () => {
   }, [files, keyword]);
 
   const handleSaveKey = async () => {
-    if (!apiKey.trim()) { message.warning('请输入 API Key'); return; }
+    if (!apiKey.trim()) { message.warning(copy.provider.emptyKey); return; }
     setSavingKey(true);
     try {
       await saveApiKey(apiKey.trim(), user);
       setSavedKey(apiKey.trim());
-      message.success('API Key 已保存');
+      message.success(copy.provider.keySaved);
     } catch (e) {
-      if (e.tokenExpired) { message.error('登录已过期'); logout(); return; }
-      message.error('保存失败：' + (e.message || ''));
+      if (e.tokenExpired) { message.error(copy.auth.expired); logout(); return; }
+      message.error(copy.provider.keyFail);
     } finally { setSavingKey(false); }
   };
 
@@ -149,14 +149,14 @@ const Knowledge = () => {
     try {
       await saveApiKey('', user);
       setApiKeyVal(''); setSavedKey('');
-      message.info('已清除');
+      message.info(copy.provider.keyCleared);
     } catch (e) {
-      message.error('清除失败');
+      message.error(copy.provider.keyFail);
     }
   };
 
   const handleRebuild = async () => {
-    if (!savedKey) { message.info('请先保存 API Key'); return; }
+    if (!savedKey) { message.info(copy.provider.emptyKey); return; }
     setRebuilding(true);
     try {
       let success = 0;
@@ -165,10 +165,10 @@ const Knowledge = () => {
         catch {}
       }
       await rebuildIndex(user);
-      message.success(`AI 描述重建完成：${success}/${files.length}`);
+      message.success(copy.provider.rebuildDone(success, files.length));
       load();
     } catch (e) {
-      message.error('重建失败：' + (e.message || ''));
+      message.error(copy.provider.rebuildFail);
     } finally { setRebuilding(false); }
   };
 
@@ -214,7 +214,7 @@ const Knowledge = () => {
       <div style={{ marginBottom: 14 }}>
         <Input
           prefix={<SearchOutlined style={{ opacity: 0.5 }} />}
-          placeholder="搜索节点名…"
+          placeholder={copy.search.placeholderNodes}
           value={keyword}
           onChange={e => setKeyword(e.target.value)}
           allowClear
@@ -227,9 +227,7 @@ const Knowledge = () => {
       ) : wikiNodes.length === 0 ? (
         <Panel>
           <PanelBody $pad="48px">
-            <Empty
-              description="还没有任何知识节点。上传文件后点击「生成 AI 摘要」即可形成节点"
-            >
+            <Empty description={copy.empty.knowledge}>
               <Button type="primary" onClick={() => nav('/files')}>去上传文件</Button>
             </Empty>
           </PanelBody>

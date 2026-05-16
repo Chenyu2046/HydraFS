@@ -16,6 +16,7 @@ import FileGrid from '../components/FileGrid';
 import FileDrawer from '../components/FileDrawer';
 import { Panel, PanelHeader, PanelBody, SectionTitle } from '../components/primitives';
 import { classifyFileType } from '../mock/graph';
+import { copy } from '../lib/copy';
 
 // ====== Styled ======
 const PageHead = styled.div`
@@ -93,12 +94,11 @@ const FileList = () => {
   const load = async () => {
     setLoading(true);
     try {
-      // 文件主页：先拉 100 兜底，后续可接前端分页/虚拟滚动
       const data = await fetchUserImages(user, { count: 100 });
       setFiles(data || []);
     } catch (e) {
-      if (e.tokenExpired) { message.error('登录已过期'); logout(); return; }
-      message.error('获取文件列表失败');
+      if (e.tokenExpired) { message.error(copy.auth.expired); logout(); return; }
+      message.error(copy.action.deleteFail);
     } finally { setLoading(false); }
   };
 
@@ -114,9 +114,9 @@ const FileList = () => {
     return arr;
   }, [files, filter, keyword]);
 
-  const handleShare       = async (r) => { try { await shareFile(r, user); message.success('分享成功'); load(); if (drawerFile?.md5 === r.md5) setDrawerFile({ ...r, share_status: 1 }); } catch { message.error('分享失败'); } };
-  const handleCancelShare = async (r) => { try { await cancelShareFile(r, user); message.success('取消分享成功'); load(); if (drawerFile?.md5 === r.md5) setDrawerFile({ ...r, share_status: 0 }); } catch { message.error('取消失败'); } };
-  const handleDelete      = async (r) => { try { await deleteImage(r, user); message.success('删除成功'); setDrawerFile(null); load(); } catch { message.error('删除失败'); } };
+  const handleShare       = async (r) => { try { await shareFile(r, user); message.success(copy.action.shareSuccess); load(); if (drawerFile?.md5 === r.md5) setDrawerFile({ ...r, share_status: 1 }); } catch { message.error(copy.action.shareFail); } };
+  const handleCancelShare = async (r) => { try { await cancelShareFile(r, user); message.success(copy.action.cancelShared); load(); if (drawerFile?.md5 === r.md5) setDrawerFile({ ...r, share_status: 0 }); } catch { message.error(copy.action.shareFail); } };
+  const handleDelete      = async (r) => { try { await deleteImage(r, user); message.success(copy.action.deleteSuccess); setDrawerFile(null); load(); } catch { message.error(copy.action.deleteFail); } };
   const handleDownload    = async (r) => {
     try { await pvFile(r, user); } catch {}
     const link = document.createElement('a'); link.href = r.url; link.download = r.file_name || r.name;
@@ -169,7 +169,7 @@ const FileList = () => {
         <Input
           className="search"
           prefix={<SearchOutlined style={{ opacity: 0.5 }} />}
-          placeholder="按文件名搜索…"
+          placeholder={copy.search.placeholderFiles}
           value={keyword}
           onChange={e => setKeyword(e.target.value)}
           allowClear
@@ -196,7 +196,7 @@ const FileList = () => {
       ) : filtered.length === 0 ? (
         <Panel>
           <PanelBody $pad="48px">
-            <Empty description={keyword ? `没有匹配 "${keyword}" 的文件` : '暂无文件，先上传一个试试'} />
+            <Empty description={keyword ? `没找到匹配 "${keyword}" 的文件` : copy.empty.files} />
           </PanelBody>
         </Panel>
       ) : view === 'grid' ? (

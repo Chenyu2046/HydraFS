@@ -6,6 +6,7 @@ import {
   FileOutlined, FilePdfOutlined, FileImageOutlined, FileTextOutlined,
   SearchOutlined, LinkOutlined,
 } from '@ant-design/icons';
+import { useInView } from '../lib/motion';
 
 /* =================================================================
  * Bento Grid 布局 — 6 张能力卡，2 大 4 中小
@@ -29,6 +30,17 @@ const Grid = styled.div`
   }
 `;
 
+/* 让卡片随父级 data-inview 翻转触发 opacity 淡入；
+   transform 不在这里碰，避免与 hover translateY 冲突 */
+const RevealStyles = `
+  opacity: 0;
+  transition: opacity 480ms cubic-bezier(.16,1,.3,1);
+  will-change: opacity;
+`;
+const RevealOn = `
+  opacity: 1;
+`;
+
 const Card = styled.div`
   /* base */
   position: relative;
@@ -41,9 +53,25 @@ const Card = styled.div`
   color: ${p => p.theme.colors.text};
   cursor: pointer;
   overflow: hidden;
-  transition: transform 240ms ${p => p.theme.ease.out},
+  ${RevealStyles}
+  transition: opacity 480ms ${p => p.theme.ease.out},
+              transform 240ms ${p => p.theme.ease.out},
               box-shadow 240ms ${p => p.theme.ease.out},
               border-color 240ms ${p => p.theme.ease.out};
+
+  /* scroll-in 错峰：父级 [data-inview="true"] 翻转后逐张亮起 */
+  [data-bento][data-inview="true"] > & { ${RevealOn} }
+  &:nth-of-type(1) { transition-delay: 0ms; }
+  &:nth-of-type(2) { transition-delay: 70ms; }
+  &:nth-of-type(3) { transition-delay: 140ms; }
+  &:nth-of-type(4) { transition-delay: 210ms; }
+  &:nth-of-type(5) { transition-delay: 280ms; }
+  &:nth-of-type(6) { transition-delay: 350ms; }
+
+  @media (prefers-reduced-motion: reduce) {
+    opacity: 1 !important;
+    transition: none !important;
+  }
 
   &:hover {
     transform: translateY(-3px);
@@ -345,6 +373,7 @@ const WORKSPACE = [
 /* ============================== Bento ============================== */
 const Bento = () => {
   const nav = useNavigate();
+  const { ref, inView } = useInView({ threshold: 0.05, once: true });
 
   // 让 div Card 既能点又能键盘操作（Enter / Space），保留 a11y
   const goer = (to) => ({
@@ -360,7 +389,7 @@ const Bento = () => {
   });
 
   return (
-    <Grid>
+    <Grid ref={ref} data-bento data-inview={inView}>
       {/* === Card 1 — Storage Pipeline (大) === */}
       <Card className="s-l1" {...goer('/files')}>
         <span className="more"><ArrowRightOutlined /></span>

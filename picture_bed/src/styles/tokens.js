@@ -15,7 +15,10 @@ const radius = {
 
 const fontSize = {
   micro: '11px', caption: '12px', body: '13px', bodyLg: '14px',
-  h4: '15px', h3: '17px', h2: '20px', h1: '26px', display: '36px',
+  h4: '15px', h3: '17px', h2: '20px', h1: '26px',
+  // 新增：display / title 用于 Hero 叙事 & 分区主标
+  display: '52px',   // 旧 36 → 52；Hero 主标题用 clamp 在组件内放大
+  title:   '34px',
 };
 
 const fontWeight = { regular: 400, medium: 500, semibold: 600, bold: 700 };
@@ -25,8 +28,19 @@ const lineHeight = { tight: 1.25, normal: 1.5, relaxed: 1.65 };
 const ease = {
   out: 'cubic-bezier(0.16, 1, 0.3, 1)',
   inOut: 'cubic-bezier(0.45, 0, 0.55, 1)',
+  spring: 'cubic-bezier(0.34, 1.56, 0.64, 1)',
 };
-const duration = { fast: '120ms', base: '200ms', slow: '320ms' };
+const duration = { fast: '120ms', base: '200ms', slow: '380ms', story: '680ms' };
+
+// 品牌锚点色：obsidian（黑曜石）— Logo / Hero 标题渐变专用
+// 注意：UI 常规交互色仍走 colors.accent，不要在 Button/Tag 这类组件里直接用 obsidian
+const obsidian = {
+  600: '#1E1B4B',
+  500: '#3730A3',
+  400: '#6366F1',
+  300: '#A5B4FC',
+  100: '#EEF2FF',
+};
 
 const fontFamily = {
   sans: `'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif`,
@@ -137,7 +151,7 @@ const light = {
 
 export const tokens = {
   space, radius, fontSize, fontWeight, lineHeight,
-  ease, duration, fontFamily,
+  ease, duration, fontFamily, obsidian,
 };
 
 export const themes = { dark, light };

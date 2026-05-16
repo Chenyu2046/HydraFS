@@ -10,6 +10,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { fetchSharedFiles, fetchSharedFilesRanking, saveSharedFile, pvSharedFile } from '../services/share';
 import { Panel, PanelHeader, PanelBody, SectionTitle } from '../components/primitives';
+import { copy } from '../lib/copy';
 
 const PageHead = styled.div`
   margin-bottom: 18px;
@@ -110,9 +111,9 @@ const SharedHub = () => {
     document.body.appendChild(link); link.click(); document.body.removeChild(link);
   };
   const handleSave = async (f) => {
-    if (!user?.token) { message.warning('请先登录'); return; }
-    try { await saveSharedFile(f, user); message.success('转存成功'); }
-    catch (e) { message[e.message === '文件已存在' ? 'warning' : 'error'](e.message === '文件已存在' ? '文件已存在' : '转存失败'); }
+    if (!user?.token) { message.warning('先登录一下吧'); return; }
+    try { await saveSharedFile(f, user); message.success(copy.action.saveSuccess); }
+    catch (e) { message[e.message === '文件已存在' ? 'warning' : 'error'](e.message === '文件已存在' ? copy.action.saveExists : copy.action.saveFail); }
   };
 
   const filteredAll = useMemo(() => {
@@ -186,7 +187,7 @@ const SharedHub = () => {
             <Input
               className="search"
               prefix={<SearchOutlined style={{ opacity: 0.5 }} />}
-              placeholder="按文件名搜索…"
+              placeholder={copy.search.placeholderFiles}
               value={keyword}
               onChange={e => setKeyword(e.target.value)}
               allowClear
@@ -231,7 +232,7 @@ const SharedHub = () => {
               )}
 
               {imgs.length === 0 && docs.length === 0 && (
-                <Panel><PanelBody $pad="48px"><Empty description={keyword ? '没有匹配的文件' : '暂无共享文件'} /></PanelBody></Panel>
+                <Panel><PanelBody $pad="48px"><Empty description={keyword ? copy.empty.sharedSearch : copy.empty.shared} /></PanelBody></Panel>
               )}
             </>
           )}
