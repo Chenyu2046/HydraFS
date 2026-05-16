@@ -19,8 +19,6 @@ import QuickUpload from '../components/QuickUpload';
 import AIPipeline from '../components/AIPipeline';
 import RecentNodes from '../components/RecentNodes';
 import { Panel, PanelHeader, PanelBody, SectionTitle } from '../components/primitives';
-import { useWindowScrollY, useInView, fadeUp } from '../lib/motion';
-import { copy } from '../lib/copy';
 
 import {
   MOCK_GRAPH, MOCK_STATS, MOCK_RECENT_NODES, MOCK_AI_PIPELINE,
@@ -55,22 +53,21 @@ const HeroLeft = styled.div`
 
   h1 {
     margin: 0;
-    font-size: clamp(40px, 5.6vw, 68px);
-    line-height: 1.04;
-    letter-spacing: -2px;
+    /* token: fontSize.hero — 用户语言驱动的大标题，固定字号便于跨页心智一致 */
+    font-size: ${p => p.theme.fontSize.hero};
+    line-height: 1.06;
+    letter-spacing: -1.4px;
     font-weight: 600;
     color: ${p => p.theme.colors.text};
 
     .accent {
       background: linear-gradient(115deg,
         ${p => p.theme.colors.accent} 0%,
-        #FF7AB6 60%,
-        #FFB37C 100%);
+        ${p => p.theme.colors.accentHover} 100%);
       -webkit-background-clip: text;
       background-clip: text;
       -webkit-text-fill-color: transparent;
-      font-style: italic;
-      font-weight: 500;
+      font-weight: 600;
     }
   }
 
@@ -194,7 +191,8 @@ const bytesUnit = (b) => {
   return 'GB';
 };
 
-const CHIPS = ['分片上传', '秒传检测', 'AI 摘要', '语义标签', '反向链接', '知识图谱'];
+// Hero 副 chips：聚焦用户能直接得到的"动作 + 价值"，不暴露技术栈
+const CHIPS = ['一键上传', '自动生成摘要', '自然语言搜索'];
 
 const Home = () => {
   const { user, logout } = useAuth();
@@ -212,7 +210,7 @@ const Home = () => {
       const f = await fetchUserImages(user, { count: 50 });
       setFiles(f || []);
     } catch (e) {
-      if (e.tokenExpired) { message.error(copy.auth.expired); logout(); return; }
+      if (e.tokenExpired) { message.error('登录已过期'); logout(); return; }
     } finally { setLoading(false); }
   };
 
@@ -281,9 +279,9 @@ const Home = () => {
 
   /* ====== AI 搜索 ====== */
   const handleSearch = async () => {
-    if (!q.trim()) { message.warning(copy.search.emptyInput); return; }
+    if (!q.trim()) { message.warning('请输入搜索内容'); return; }
     if (!apiKey) {
-      message.info(copy.search.needKey);
+      message.info('请先在 Knowledge 页设置 API Key');
       nav('/knowledge');
       return;
     }
@@ -292,43 +290,25 @@ const Home = () => {
       const data = await aiSearch(q, user, apiKey);
       setResults(data.files || []);
     } catch (e) {
-      if (e.tokenExpired) { message.error(copy.auth.expired); logout(); return; }
-      message.error(copy.search.aiFail);
+      if (e.tokenExpired) { message.error('登录已过期'); logout(); return; }
+      if (e.apiKeyInvalid) { /* 全局弹窗已提示 */ return; }
+      message.error('搜索失败：' + (e.message || ''));
     } finally { setSearching(false); }
   };
-
-  /* ====== 滚动视差 ====== */
-  const scrollY = useWindowScrollY();
-  // 0 → 600px 滚动范围内：标题 translateY 0 → -32，透明度 1 → 0.35
-  const heroProgress = Math.min(1, Math.max(0, scrollY / 600));
-  const heroParallax = {
-    transform: `translate3d(0, ${-32 * heroProgress}px, 0)`,
-    opacity: 1 - heroProgress * 0.65,
-    transition: 'opacity 120ms linear',
-    willChange: 'transform, opacity',
-  };
-  const heroBgParallax = {
-    transform: `scale(${1 + heroProgress * 0.05})`,
-    transition: 'transform 200ms linear',
-    willChange: 'transform',
-  };
-
-  // Workspace 区进入视口淡入
-  const wsView = useInView({ threshold: 0.12, once: true });
 
   return (
     <div>
       {/* ============== Hero Canvas ============== */}
       <HeroCanvas>
-        <HeroLeft style={heroParallax}>
+        <HeroLeft>
           <span className="eyebrow"><i />Distributed Knowledge Cloud · v1.0</span>
           <h1>
-            把文件沉淀为<br />
-            <span className="accent">可探索的知识网络</span>
+            Files in.<br />
+            <span className="accent">Knowledge out.</span>
           </h1>
           <p className="sub">
-            基于分布式云存储、AI 文件理解与双向链接关系建模，
-            将上传文件组织成可检索、可关联、可追溯的个人知识资产。
+            上传文件，沉淀知识网络 —— AI 自动生成摘要、提取标签、建立反向链接，
+            让你的资料从"存起来"变成"用得上"。
           </p>
 
           <SearchBlock>
@@ -337,7 +317,7 @@ const Home = () => {
                 size="large"
                 variant="borderless"
                 prefix={<SearchOutlined style={{ color: 'var(--text2)', opacity: 0.6 }} />}
-                placeholder={copy.search.placeholder}
+                placeholder="上传文件，或搜索摘要、标签与知识关系…"
                 value={q}
                 onChange={e => setQ(e.target.value)}
                 onPressEnter={handleSearch}
@@ -357,7 +337,7 @@ const Home = () => {
 
           {searching && (
             <div style={{ padding: '8px 0' }}>
-              <Spin size="small" /> <span style={{ marginLeft: 8, color: 'var(--text2)' }}>{copy.loading.searching}</span>
+              <Spin size="small" /> <span style={{ marginLeft: 8, color: 'var(--text2)' }}>语义检索中…</span>
             </div>
           )}
           {results && !searching && (
@@ -368,7 +348,7 @@ const Home = () => {
               </PanelHeader>
               <PanelBody $pad="0 18px 12px">
                 {results.length === 0 ? (
-                  <Empty description={copy.empty.searchResult} image={Empty.PRESENTED_IMAGE_SIMPLE} />
+                  <Empty description="没有匹配结果" image={Empty.PRESENTED_IMAGE_SIMPLE} />
                 ) : (
                   <SearchResults>
                     {results.slice(0, 5).map(r => (
@@ -393,9 +373,7 @@ const Home = () => {
 
         <div>
           <ProductWindow url="hydrafs.app/graph" live>
-            <div style={heroBgParallax}>
-              <MiniGraph data={graphData} height={320} />
-            </div>
+            <MiniGraph data={graphData} height={320} />
           </ProductWindow>
         </div>
 
@@ -408,8 +386,8 @@ const Home = () => {
       {/* ============== Bento Grid (Capabilities) ============== */}
       <ContentArea>
         <SectionTitle>
-          <h2>Three layers, one product</h2>
-          <span>分布式存储 · AI 文件理解 · 双向链接图谱 — 共同构成你的知识资产</span>
+          <h2>Files in. Knowledge out.</h2>
+          <span>三项 AI 能力，让每一次上传都产生新连接</span>
         </SectionTitle>
         <Bento />
 
@@ -418,11 +396,7 @@ const Home = () => {
           <h2>Workspace</h2>
           <span>上传文件即进入 AI 流水线，状态实时回流</span>
         </SectionTitle>
-        <div
-          ref={wsView.ref}
-          style={fadeUp(wsView.inView, 0)}
-        >
-          <Cols>
+        <Cols>
           <div>
             <QuickUpload onDone={load} />
             <div style={{ height: 16 }} />
@@ -447,9 +421,9 @@ const Home = () => {
             <AIPipeline items={aiQueue} />
           </Panel>
         </Cols>
-        </div>
 
         {/* ============== Trust footer ============== */}
+        {/* 不再列具体技术栈（FastDFS / MySQL / DashScope / FAISS），改为用户视角的承诺 */}
         <div style={{
           marginTop: 56, padding: '24px 0',
           borderTop: '1px solid var(--border)',
@@ -459,13 +433,13 @@ const Home = () => {
         }}>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-              <CheckCircleOutlined style={{ color: 'var(--success)' }} /> FastDFS · MySQL · Redis
+              <CheckCircleOutlined style={{ color: 'var(--success)' }} /> 私有云部署，数据自托管
             </span>
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-              <ApiOutlined /> DashScope embeddings
+              <ApiOutlined /> 可替换的 AI 提供方
             </span>
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-              <NodeIndexOutlined /> FAISS index
+              <NodeIndexOutlined /> 知识可导出，永不锁定
             </span>
           </span>
           <span style={{ fontFamily: 'JetBrains Mono, monospace' }}>HydraFS v1.0</span>
@@ -474,7 +448,7 @@ const Home = () => {
 
       {loading && files.length === 0 && (
         <div style={{ position: 'fixed', right: 24, bottom: 24, opacity: 0.7 }}>
-          <Spin size="small" /> <span style={{ marginLeft: 8, fontSize: 12 }}>{copy.loading.default}</span>
+          <Spin size="small" /> <span style={{ marginLeft: 8, fontSize: 12 }}>Loading…</span>
         </div>
       )}
     </div>

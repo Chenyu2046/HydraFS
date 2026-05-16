@@ -1,26 +1,26 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import styled from '@emotion/styled';
-import { Tabs, Table, Button, Tooltip, message, Skeleton, Empty, Tag, Modal, Input } from 'antd';
+import { Segmented, Table, Button, Tooltip, message, Skeleton, Empty, Tag, Modal, Input } from 'antd';
 import {
   DownloadOutlined, SaveOutlined, FileOutlined, FilePdfOutlined, FileWordOutlined,
-  FileExcelOutlined, FileZipOutlined, FileTextOutlined, EyeOutlined, SearchOutlined,
+  FileExcelOutlined, FileZipOutlined, FileTextOutlined, SearchOutlined,
   TrophyOutlined, TeamOutlined,
 } from '@ant-design/icons';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { fetchSharedFiles, fetchSharedFilesRanking, saveSharedFile, pvSharedFile } from '../services/share';
 import { Panel, PanelHeader, PanelBody, SectionTitle } from '../components/primitives';
-import { copy } from '../lib/copy';
 
 const PageHead = styled.div`
+  display: flex; align-items: flex-end; justify-content: space-between; gap: 16px;
   margin-bottom: 18px;
-  h1 {
+  .meta h1 {
     margin: 0 0 4px;
     font-size: 24px; font-weight: 700;
     letter-spacing: -0.4px;
     color: ${p => p.theme.colors.text};
   }
-  p { margin: 0; font-size: 13px; color: ${p => p.theme.colors.text2}; }
+  .meta p { margin: 0; font-size: 13px; color: ${p => p.theme.colors.text2}; }
 `;
 
 const Toolbar = styled.div`
@@ -88,8 +88,12 @@ const SharedHub = () => {
   const { user } = useAuth();
   const loc = useLocation();
   const nav = useNavigate();
-  const initial = useMemo(() => new URLSearchParams(loc.search).get('tab') || 'browse', [loc.search]);
-  const [tab, setTab] = useState(initial);
+  const initial = useMemo(() => {
+    const sp = new URLSearchParams(loc.search);
+    // 兼容旧 ?tab=top 链接
+    return sp.get('sort') || sp.get('tab') || 'browse';
+  }, [loc.search]);
+  const [sort, setSort] = useState(initial);
   const [allFiles, setAllFiles] = useState([]);
   const [topFiles, setTopFiles] = useState([]);
   const [keyword, setKeyword] = useState('');
@@ -111,9 +115,9 @@ const SharedHub = () => {
     document.body.appendChild(link); link.click(); document.body.removeChild(link);
   };
   const handleSave = async (f) => {
-    if (!user?.token) { message.warning('先登录一下吧'); return; }
-    try { await saveSharedFile(f, user); message.success(copy.action.saveSuccess); }
-    catch (e) { message[e.message === '文件已存在' ? 'warning' : 'error'](e.message === '文件已存在' ? copy.action.saveExists : copy.action.saveFail); }
+    if (!user?.token) { message.warning('请先登录'); return; }
+    try { await saveSharedFile(f, user); message.success('转存成功'); }
+    catch (e) { message[e.message === '文件已存在' ? 'warning' : 'error'](e.message === '文件已存在' ? '文件已存在' : '转存失败'); }
   };
 
   const filteredAll = useMemo(() => {
@@ -168,26 +172,31 @@ const SharedHub = () => {
   return (
     <div>
       <PageHead>
-        <h1>Shared</h1>
-        <p>来自其他用户的公开文件 · 共 {allFiles.length} 个</p>
+        <div className="meta">
+          <h1>Shared</h1>
+          <p>来自其他用户的公开文件 · 共 {allFiles.length} 个</p>
+        </div>
+        {/* 浏览 / 下载榜 用 Segmented 作为"排序/视角"开关，避免在内容页再造一层 Tab 导航 */}
+        <Segmented
+          value={sort}
+          onChange={(v) => {
+            setSort(v);
+            nav('/shared' + (v === 'browse' ? '' : '?sort=' + v), { replace: true });
+          }}
+          options={[
+            { value: 'browse', label: <span><TeamOutlined /> 浏览</span> },
+            { value: 'top',    label: <span><TrophyOutlined /> 下载榜</span> },
+          ]}
+        />
       </PageHead>
 
-      <Tabs
-        activeKey={tab}
-        onChange={(k) => { setTab(k); nav('/shared' + (k === 'browse' ? '' : '?tab=' + k), { replace: true }); }}
-        items={[
-          { key: 'browse', label: <span><TeamOutlined /> 浏览</span> },
-          { key: 'top',    label: <span><TrophyOutlined /> 下载榜</span> },
-        ]}
-      />
-
-      {tab === 'browse' && (
+      {sort === 'browse' && (
         <>
           <Toolbar>
             <Input
               className="search"
               prefix={<SearchOutlined style={{ opacity: 0.5 }} />}
-              placeholder={copy.search.placeholderFiles}
+              placeholder="按文件名搜索…"
               value={keyword}
               onChange={e => setKeyword(e.target.value)}
               allowClear
@@ -232,14 +241,14 @@ const SharedHub = () => {
               )}
 
               {imgs.length === 0 && docs.length === 0 && (
-                <Panel><PanelBody $pad="48px"><Empty description={keyword ? copy.empty.sharedSearch : copy.empty.shared} /></PanelBody></Panel>
+                <Panel><PanelBody $pad="48px"><Empty description={keyword ? '没有匹配的文件' : '暂无共享文件'} /></PanelBody></Panel>
               )}
             </>
           )}
         </>
       )}
 
-      {tab === 'top' && (
+      {sort === 'top' && (
         <Panel style={{ overflow: 'hidden', marginTop: 4 }}>
           <PanelHeader>
             <h3>Top Downloads</h3>

@@ -9,7 +9,6 @@ import { useAuth } from '../contexts/AuthContext';
 import { fetchUserImages } from '../services/images';
 import { fetchApiKey, saveApiKey, describeFileByMd5, rebuildIndex } from '../services/ai';
 import { Panel, PanelHeader, PanelBody, SectionTitle, Pill } from '../components/primitives';
-import { copy } from '../lib/copy';
 
 const PageHead = styled.div`
   margin-bottom: 18px;
@@ -110,10 +109,11 @@ const Knowledge = () => {
   const load = async () => {
     setLoading(true);
     try {
+      // 知识页要批量重建索引，尽量拉全
       const data = await fetchUserImages(user, { count: 200 });
       setFiles(data || []);
     } catch (e) {
-      if (e.tokenExpired) { message.error(copy.auth.expired); logout(); return; }
+      if (e.tokenExpired) { message.error('登录已过期'); logout(); return; }
     } finally { setLoading(false); }
   };
 
@@ -133,15 +133,15 @@ const Knowledge = () => {
   }, [files, keyword]);
 
   const handleSaveKey = async () => {
-    if (!apiKey.trim()) { message.warning(copy.provider.emptyKey); return; }
+    if (!apiKey.trim()) { message.warning('请输入 API Key'); return; }
     setSavingKey(true);
     try {
       await saveApiKey(apiKey.trim(), user);
       setSavedKey(apiKey.trim());
-      message.success(copy.provider.keySaved);
+      message.success('API Key 已保存');
     } catch (e) {
-      if (e.tokenExpired) { message.error(copy.auth.expired); logout(); return; }
-      message.error(copy.provider.keyFail);
+      if (e.tokenExpired) { message.error('登录已过期'); logout(); return; }
+      message.error('保存失败：' + (e.message || ''));
     } finally { setSavingKey(false); }
   };
 
@@ -149,26 +149,35 @@ const Knowledge = () => {
     try {
       await saveApiKey('', user);
       setApiKeyVal(''); setSavedKey('');
-      message.info(copy.provider.keyCleared);
+      message.info('已清除');
     } catch (e) {
-      message.error(copy.provider.keyFail);
+      message.error('清除失败');
     }
   };
 
   const handleRebuild = async () => {
-    if (!savedKey) { message.info(copy.provider.emptyKey); return; }
+    if (!savedKey) { message.info('请先保存 API Key'); return; }
     setRebuilding(true);
     try {
       let success = 0;
+      let apiKeyBroken = false;
       for (const f of files) {
         try { await describeFileByMd5(f.md5, f.file_name || f.name, f.type, user, savedKey, true); success++; }
-        catch {}
+        catch (e) {
+          if (e.apiKeyInvalid) { apiKeyBroken = true; break; }
+        }
+      }
+      if (apiKeyBroken) {
+        // 全局弹窗已由 services/ai.js 触发，这里再补一句 toast
+        message.error('API Key 无效，已中断重建');
+        return;
       }
       await rebuildIndex(user);
-      message.success(copy.provider.rebuildDone(success, files.length));
+      message.success(`AI 描述重建完成：${success}/${files.length}`);
       load();
     } catch (e) {
-      message.error(copy.provider.rebuildFail);
+      if (e.apiKeyInvalid) { /* 全局弹窗已提示 */ return; }
+      message.error('重建失败：' + (e.message || ''));
     } finally { setRebuilding(false); }
   };
 
@@ -214,7 +223,7 @@ const Knowledge = () => {
       <div style={{ marginBottom: 14 }}>
         <Input
           prefix={<SearchOutlined style={{ opacity: 0.5 }} />}
-          placeholder={copy.search.placeholderNodes}
+          placeholder="搜索节点名…"
           value={keyword}
           onChange={e => setKeyword(e.target.value)}
           allowClear
@@ -227,7 +236,9 @@ const Knowledge = () => {
       ) : wikiNodes.length === 0 ? (
         <Panel>
           <PanelBody $pad="48px">
-            <Empty description={copy.empty.knowledge}>
+            <Empty
+              description="还没有任何知识节点。上传文件后点击「生成 AI 摘要」即可形成节点"
+            >
               <Button type="primary" onClick={() => nav('/files')}>去上传文件</Button>
             </Empty>
           </PanelBody>

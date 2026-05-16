@@ -8,9 +8,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { useThemeMode } from '../contexts/ThemeContext';
 import { loginUser, registerUser } from '../services/auth';
 import MiniGraph from '../components/MiniGraph';
-import Logo from '../components/Logo';
 import { MOCK_GRAPH } from '../mock/graph';
-import { copy } from '../lib/copy';
 
 const Page = styled.div`
   min-height: 100vh;
@@ -176,19 +174,19 @@ const Login = () => {
       if (isReg) {
         const data = await registerUser(v);
         if (data.code === 0) {
-          message.success(copy.auth.regSuccess);
+          message.success('注册成功，请登录');
           setIsReg(false);
           form.setFieldsValue({ username: v.username, password: '' });
-        } else if (data.code === 2) message.error(copy.auth.regUserExists);
-        else if (data.code === 6) message.error(copy.auth.regNickExists);
+        } else if (data.code === 2) message.error('用户名已存在');
+        else if (data.code === 6) message.error('昵称已存在');
       } else {
         const data = await loginUser(v.username, md5(v.password));
-        message.success(copy.auth.loginSuccess);
+        message.success('登录成功');
         login({ username: v.username, token: data.token });
         nav('/');
       }
     } catch (e) {
-      message.error(e.message === '登录失败' ? copy.auth.loginFail : copy.auth.networkFail);
+      message[e.message === '登录失败' ? 'error' : 'error'](e.message === '登录失败' ? '用户名或密码错误' : '请求失败，请检查网络');
     } finally { setSubmitting(false); }
   };
 
@@ -196,7 +194,8 @@ const Login = () => {
     <Page>
       <Hero>
         <Brand>
-          <Logo size={30} withWordmark wordmarkSize={20} />
+          <span className="logo">H</span>
+          <span>HydraFS</span>
         </Brand>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
           <Headline>分布式存储 +<br /><span>AI 双链知识图谱</span></Headline>

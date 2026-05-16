@@ -72,8 +72,9 @@ const items = [
   { to: '/',           icon: <AppstoreOutlined />,  label: 'Overview' },
   { to: '/files',      icon: <FolderOutlined />,    label: 'Files' },
   { to: '/knowledge',  icon: <BookOutlined />,      label: 'Knowledge' },
-  { to: '/graph',      icon: <NodeIndexOutlined />, label: 'Graph' },
   { to: '/shared',     icon: <ShareAltOutlined />,  label: 'Shared' },
+  // Graph 是知识库的"高阶视图"，常用度低于前四项，故置于末位以减轻视觉权重
+  { to: '/graph',      icon: <NodeIndexOutlined />, label: 'Graph' },
 ];
 
 const Sidebar = () => {

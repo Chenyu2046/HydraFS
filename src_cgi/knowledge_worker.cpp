@@ -47,6 +47,7 @@ static char mysql_user[128] = {0};
 static char mysql_pwd[128] = {0};
 static char mysql_db[128] = {0};
 static char embedding_model[64] = {0};
+static char summary_model[64] = "qwen-turbo";
 static int  embedding_dimension = 1024;
 static char web_server_ip[30] = {0};
 static char web_server_port[10] = {0};
@@ -75,6 +76,13 @@ static void read_cfg()
     char dim_str[16] = {0};
     get_cfg_value(CFG_PATH, "dashscope", "embedding_dimension", dim_str);
     if (strlen(dim_str) > 0) embedding_dimension = atoi(dim_str);
+    /* 摘要模型，缺省 qwen-turbo */
+    char sum_buf[64] = {0};
+    get_cfg_value(CFG_PATH, "dashscope", "summary_model", sum_buf);
+    if (strlen(sum_buf) > 0) {
+        strncpy(summary_model, sum_buf, sizeof(summary_model) - 1);
+        summary_model[sizeof(summary_model) - 1] = '\0';
+    }
     get_cfg_value(CFG_PATH, "faiss", "user_index_dir", faiss_user_index_dir);
     get_cfg_value(CFG_PATH, "web_server", "ip", web_server_ip);
     get_cfg_value(CFG_PATH, "web_server", "port", web_server_port);
@@ -344,6 +352,54 @@ static void make_summary(const char *text, char *summary, int max_len)
         char_count++;
     }
     *dst = '\0';
+}
+
+/* 合并两组 tag JSON 数组：a, b → out，按字符串去重，最多 max_tags 项 */
+static void merge_tag_arrays(const char *a_json, const char *b_json,
+                             char *out_json, int out_size, int max_tags)
+{
+    if (!out_json || out_size <= 0) return;
+    snprintf(out_json, out_size, "[]");
+
+    cJSON *result = cJSON_CreateArray();
+    if (!result) return;
+
+    int count = 0;
+    /* 简单去重：把已添加项放在 dedup 数组 */
+    char added[32][128]; int added_n = 0;
+
+    const char *sources[2] = { a_json, b_json };
+    for (int s = 0; s < 2 && count < max_tags; s++) {
+        if (!sources[s] || strlen(sources[s]) < 2) continue;
+        cJSON *arr = cJSON_Parse(sources[s]);
+        if (!arr || !cJSON_IsArray(arr)) { if (arr) cJSON_Delete(arr); continue; }
+        int n = cJSON_GetArraySize(arr);
+        for (int i = 0; i < n && count < max_tags; i++) {
+            cJSON *it = cJSON_GetArrayItem(arr, i);
+            if (!it || !it->valuestring || !*it->valuestring) continue;
+            int dup = 0;
+            for (int k = 0; k < added_n; k++) {
+                if (strcasecmp(added[k], it->valuestring) == 0) { dup = 1; break; }
+            }
+            if (dup) continue;
+            if (added_n < (int)(sizeof(added) / sizeof(added[0]))) {
+                strncpy(added[added_n], it->valuestring, sizeof(added[0]) - 1);
+                added[added_n][sizeof(added[0]) - 1] = '\0';
+                added_n++;
+            }
+            cJSON_AddItemToArray(result, cJSON_CreateString(it->valuestring));
+            count++;
+        }
+        cJSON_Delete(arr);
+    }
+
+    char *s = cJSON_PrintUnformatted(result);
+    if (s) {
+        strncpy(out_json, s, out_size - 1);
+        out_json[out_size - 1] = '\0';
+        free(s);
+    }
+    cJSON_Delete(result);
 }
 
 /* 写全局缓存 file_ai_desc */
@@ -714,15 +770,13 @@ static int process_one_task(MYSQL *conn, long task_id, const char *user,
                  md5, desc_len, text_content);
     }
 
-    /* 5. 生成摘要 */
+    /* 5. 生成摘要（先用截断打底） */
     make_summary(text_content, summary, sizeof(summary));
 
-    /* 提取 [[links]] → tags */
-    extract_tags_from_wikilinks(text_content, tags_json, sizeof(tags_json));
+    /* 提取 [[links]] → 显式标签 */
+    char explicit_tags_json[1024] = {0};
+    extract_tags_from_wikilinks(text_content, explicit_tags_json, sizeof(explicit_tags_json));
     build_outline_json(text_content, outline_json, sizeof(outline_json));
-
-    LOG(UTIL_LOG_MODULE, UTIL_LOG_PROC,
-        "summary=%.100s, tags=%s, outline=%s\n", summary, tags_json, outline_json);
 
     /* 7. 获取 API Key */
     if (load_user_api_key(conn, user, api_key, sizeof(api_key)) != 0 &&
@@ -730,8 +784,38 @@ static int process_one_task(MYSQL *conn, long task_id, const char *user,
         strncpy(api_key, dashscope_api_key, sizeof(api_key) - 1);
     }
 
+    /* 5.b 调用 LLM 生成更高质量摘要 + 自动 tag，失败则保留截断摘要 */
+    char ai_tags_json[1024] = {0};
+    snprintf(ai_tags_json, sizeof(ai_tags_json), "[]");
+    if (strlen(api_key) > 0 && text_len > 0) {
+        char ai_summary[1024] = {0};
+        if (dashscope_summarize_text(api_key, summary_model,
+                                     text_content,
+                                     ai_summary, sizeof(ai_summary),
+                                     ai_tags_json, sizeof(ai_tags_json)) == 0
+            && strlen(ai_summary) > 0) {
+            strncpy(summary, ai_summary, sizeof(summary) - 1);
+            summary[sizeof(summary) - 1] = '\0';
+            LOG(UTIL_LOG_MODULE, UTIL_LOG_PROC,
+                "LLM summary ok: %.80s\n", summary);
+        } else {
+            LOG(UTIL_LOG_MODULE, UTIL_LOG_PROC,
+                "LLM summary failed (fallback to truncation): code=%s msg=%s\n",
+                dashscope_last_error_code(), dashscope_last_error_msg());
+            /* API Key 失效时不继续后面 embedding 也会失败，但摘要保留打底版 */
+        }
+    }
+
+    /* 合并 [[显式]] + AI 抽取 → 最终 tags_json，最多 8 个 */
+    merge_tag_arrays(explicit_tags_json, ai_tags_json,
+                     tags_json, sizeof(tags_json), 8);
+
+    LOG(UTIL_LOG_MODULE, UTIL_LOG_PROC,
+        "summary=%.100s, tags=%s, outline=%s\n", summary, tags_json, outline_json);
+
     /* 8. 生成 embedding */
     const char *embedding_error = NULL;
+    char embedding_error_buf[768] = {0};
     if (strlen(api_key) > 0) {
         vec = (float *)malloc(sizeof(float) * embedding_dimension);
         if (vec) {
@@ -739,16 +823,29 @@ static int process_one_task(MYSQL *conn, long task_id, const char *user,
             if (dashscope_get_embedding(api_key, embedding_model,
                                         description, vec, embedding_dimension) != 0) {
                 LOG(UTIL_LOG_MODULE, UTIL_LOG_PROC,
-                    "embedding failed for task %ld\n", task_id);
+                    "embedding failed for task %ld: code=%s msg=%s http=%ld\n",
+                    task_id, dashscope_last_error_code(),
+                    dashscope_last_error_msg(), dashscope_last_http_code());
                 free(vec);
                 vec = NULL;
-                embedding_error = "embedding API call failed";
+                if (dashscope_last_error_is_api_key()) {
+                    snprintf(embedding_error_buf, sizeof(embedding_error_buf),
+                             "api_key_invalid: %s (%s)",
+                             dashscope_last_error_msg(),
+                             dashscope_last_error_code());
+                } else {
+                    snprintf(embedding_error_buf, sizeof(embedding_error_buf),
+                             "embedding_failed: %s (%s)",
+                             dashscope_last_error_msg(),
+                             dashscope_last_error_code());
+                }
+                embedding_error = embedding_error_buf;
             } else {
                 vector_l2_normalize(vec, embedding_dimension);
             }
         }
     } else {
-        embedding_error = "no API key configured";
+        embedding_error = "api_key_missing: 请在 Knowledge 页配置 DashScope API Key";
         LOG(UTIL_LOG_MODULE, UTIL_LOG_PROC,
             "no API key for task %ld, embedding skipped\n", task_id);
     }

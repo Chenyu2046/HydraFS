@@ -2,6 +2,25 @@
  * HydraFS Design Tokens
  * 单一来源：颜色 / 间距 / 字号 / 圆角 / 阴影 / 动效 / 字体
  * 不要在组件里写死颜色，所有颜色走 useTheme().colors
+ *
+ * ─────────────────────────────────────────────────────────────
+ * 全局设计原则（前端必须遵守，违反则在 CR 中拒绝合入）：
+ *
+ * 1. 导航单一源
+ *    位置心智只由 Sidebar 承载；Topbar 仅在路径 ≥2 段时显示面包屑深度。
+ *    内容页禁止再造 Tabs / NavLink 作为页面级导航 —— 用 Segmented / 锚点 / 路由替代。
+ *
+ * 2. 用户语言优先
+ *    Home / Bento / Trust footer 等"对外文案"只描述用户能直接得到的价值；
+ *    技术栈名称（FastDFS / MySQL / Redis / DashScope / FAISS / Embedding 等）
+ *    只允许出现在 Knowledge 设置页与开发者文档中。
+ *
+ * 3. 只展示已上线的能力
+ *    Hero / Bento 的 mock 必须与已合入的后端能力一一对应；
+ *    展示"PPT 级功能"被视为反 pattern。
+ *
+ * 4. 字号使用 token，不要在组件里写 clamp(…vw…) 或随手的 magic number。
+ * ─────────────────────────────────────────────────────────────
  */
 
 const space = {
@@ -15,10 +34,10 @@ const radius = {
 
 const fontSize = {
   micro: '11px', caption: '12px', body: '13px', bodyLg: '14px',
-  h4: '15px', h3: '17px', h2: '20px', h1: '26px',
-  // 新增：display / title 用于 Hero 叙事 & 分区主标
-  display: '52px',   // 旧 36 → 52；Hero 主标题用 clamp 在组件内放大
-  title:   '34px',
+  h4: '15px', h3: '17px', h2: '20px', h1: '26px', display: '36px',
+  // hero：Home 首屏大标题专用。固定字号（不用 clamp）以保证跨设备心智一致；
+  // 移动端如需缩放，在组件里通过 @media 单独覆盖。
+  hero: '44px',
 };
 
 const fontWeight = { regular: 400, medium: 500, semibold: 600, bold: 700 };
@@ -28,19 +47,8 @@ const lineHeight = { tight: 1.25, normal: 1.5, relaxed: 1.65 };
 const ease = {
   out: 'cubic-bezier(0.16, 1, 0.3, 1)',
   inOut: 'cubic-bezier(0.45, 0, 0.55, 1)',
-  spring: 'cubic-bezier(0.34, 1.56, 0.64, 1)',
 };
-const duration = { fast: '120ms', base: '200ms', slow: '380ms', story: '680ms' };
-
-// 品牌锚点色：obsidian（黑曜石）— Logo / Hero 标题渐变专用
-// 注意：UI 常规交互色仍走 colors.accent，不要在 Button/Tag 这类组件里直接用 obsidian
-const obsidian = {
-  600: '#1E1B4B',
-  500: '#3730A3',
-  400: '#6366F1',
-  300: '#A5B4FC',
-  100: '#EEF2FF',
-};
+const duration = { fast: '120ms', base: '200ms', slow: '320ms' };
 
 const fontFamily = {
   sans: `'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif`,
@@ -151,7 +159,7 @@ const light = {
 
 export const tokens = {
   space, radius, fontSize, fontWeight, lineHeight,
-  ease, duration, fontFamily, obsidian,
+  ease, duration, fontFamily,
 };
 
 export const themes = { dark, light };

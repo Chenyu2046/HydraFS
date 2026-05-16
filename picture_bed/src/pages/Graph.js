@@ -9,7 +9,6 @@ import { useAuth } from '../contexts/AuthContext';
 import { fetchUserImages } from '../services/images';
 import { Panel, PanelHeader, Pill } from '../components/primitives';
 import { MOCK_GRAPH, buildGraphFromFiles, classifyFileType } from '../mock/graph';
-import { copy } from '../lib/copy';
 
 const Wrap = styled.div`
   display: grid;
@@ -129,6 +128,7 @@ const Graph = () => {
   const load = async () => {
     setLoading(true);
     try {
+      // 图谱视图节点上限 200，更多需要 buildGraphFromFiles 内部 slice 控制
       const files = await fetchUserImages(user, { count: 200 });
       const built = buildGraphFromFiles(files);
       if (built && built.nodes.length >= 4) {
@@ -137,7 +137,7 @@ const Graph = () => {
         setData(MOCK_GRAPH); setUsingMock(true);
       }
     } catch (e) {
-      if (e.tokenExpired) { message.error(copy.auth.expired); logout(); return; }
+      if (e.tokenExpired) { message.error('登录已过期'); logout(); return; }
       setData(MOCK_GRAPH); setUsingMock(true);
     } finally { setLoading(false); }
   };
@@ -196,7 +196,7 @@ const Graph = () => {
         <div>
           <h1 style={{ margin: '0 0 4px', fontSize: 24, fontWeight: 700, letterSpacing: '-0.4px' }}>Knowledge Graph</h1>
           <p style={{ margin: 0, fontSize: 13, opacity: 0.7 }}>
-            {copy.graph.hint}
+            文件之间通过共享概念自动建立双向链接 · 拖拽节点 / 滚轮缩放 / 点击选中
           </p>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
@@ -220,8 +220,8 @@ const Graph = () => {
             {loading ? (
               <div style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center' }}><Spin /></div>
             ) : data.nodes.length === 0 ? (
-              <div style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', padding: 32, textAlign: 'center' }}>
-                <Empty description={copy.empty.graph} />
+              <div style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center' }}>
+                <Empty description="暂无节点" />
               </div>
             ) : (
               <ForceGraph2D
@@ -301,7 +301,7 @@ const Graph = () => {
             <div style={{ padding: '14px 16px' }}>
               {!selected ? (
                 <div style={{ fontSize: 12.5, color: theme.colors.text2, lineHeight: 1.6 }}>
-                  {copy.graph.selectHint}
+                  点击图谱中的任意节点查看详情，或在右侧列表中选择。
                 </div>
               ) : (
                 <>
@@ -331,7 +331,7 @@ const Graph = () => {
               <Input
                 size="small"
                 prefix={<SearchOutlined style={{ opacity: 0.5 }} />}
-                placeholder={copy.search.placeholderNodes}
+                placeholder="筛选节点…"
                 value={keyword}
                 onChange={e => setKeyword(e.target.value)}
                 allowClear

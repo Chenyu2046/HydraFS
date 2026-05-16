@@ -6,6 +6,46 @@ const API_KEY_STORAGE_PREFIX = 'dashscope_api_key_';
 
 const getStorageKey = (user) => `${API_KEY_STORAGE_PREFIX}${user.username}`;
 
+/* ============ API Key 错误统一处理 ============
+ * - 后端返回 code=2 表示 DashScope API Key 无效 / 欠费 / 鉴权失败
+ * - services 层抛出一个带 apiKeyInvalid 标志的 Error，调用方可统一弹窗
+ * - 通过一个外部注册的 listener 在 App 顶层做全局节流提示，避免每次调用都弹
+ */
+let _apiKeyInvalidListener = null;
+let _lastNotifyAt = 0;
+
+export const setApiKeyInvalidListener = (fn) => { _apiKeyInvalidListener = fn; };
+
+const notifyApiKeyInvalid = (info) => {
+  const now = Date.now();
+  if (now - _lastNotifyAt < 5000) return; // 5s 内只弹一次
+  _lastNotifyAt = now;
+  if (typeof _apiKeyInvalidListener === 'function') {
+    try { _apiKeyInvalidListener(info); } catch {}
+  }
+};
+
+const makeApiKeyError = (data) => {
+  const msg = data?.msg || 'DashScope API Key 无效或欠费';
+  const err = new Error(msg);
+  err.apiKeyInvalid = true;
+  err.errCode = data?.err_code || '';
+  notifyApiKeyInvalid({ msg, errCode: err.errCode });
+  return err;
+};
+
+const checkResponseCode = (data) => {
+  if (!data) return;
+  if (data.code === 4) {
+    const err = new Error('token expired');
+    err.tokenExpired = true;
+    throw err;
+  }
+  if (data.code === 2) {
+    throw makeApiKeyError(data);
+  }
+};
+
 const syncApiKeyToServer = async (key, user) => {
   const response = await fetch(`${AI_ENDPOINT}?cmd=set_apikey`, {
     method: 'POST',
@@ -111,7 +151,7 @@ const calculateMD5 = (file) => {
 
 /**
  * 上传后异步调用 AI 生成文件描述 + 向量
- * 失败不影响上传流程
+ * 失败不影响上传流程，但 API Key 错误会通过全局 listener 弹窗
  */
 export const describeFile = async (file, user, apiKey) => {
   try {
@@ -135,6 +175,11 @@ export const describeFile = async (file, user, apiKey) => {
     });
 
     const data = await response.json();
+    if (data.code === 2) {
+      // 触发全局弹窗，但不向上抛（不影响上传成功提示）
+      makeApiKeyError(data);
+      return data;
+    }
     if (data.code === 0) {
       console.log('AI describe success:', file.name);
     } else {
@@ -170,11 +215,7 @@ export const describeFileByMd5 = async (md5, filename, type, user, apiKey, skipR
   });
 
   const data = await response.json();
-  if (data.code === 4) {
-    const err = new Error('token expired');
-    err.tokenExpired = true;
-    throw err;
-  }
+  checkResponseCode(data);
   if (data.code !== 0) {
     throw new Error(data.msg || '生成描述失败');
   }
@@ -200,11 +241,7 @@ export const aiSearch = async (query, user, apiKey) => {
   });
 
   const data = await response.json();
-  if (data.code === 4) {
-    const err = new Error('token expired');
-    err.tokenExpired = true;
-    throw err;
-  }
+  checkResponseCode(data);
   if (data.code !== 0) {
     throw new Error(data.msg || '搜索失败');
   }
