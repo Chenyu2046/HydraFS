@@ -483,35 +483,85 @@ static void make_summary(const char *text, char *summary, int max_len)
 }
 
 /* 写全局缓存 file_ai_desc */
-static int write_global_cache(MYSQL *conn, const char *md5, const char *desc, 
-                              const float *vec, const char *summary, 
-                              const char *tags, const char *model) 
+static int write_global_cache(MYSQL *conn, const char *md5, const char *desc,
+                              const float *vec, const char *summary,
+                              const char *tags, const char *outline,
+                              const char *model, char *err_buf, size_t err_buf_len)
 {
-    char sql[4096] = {0};
-    int ret = 0;
+    char *sql = NULL;
+    int ret = -1;
+    int sql_len = 0;
+    int written = 0;
     
     char *esc_md5 = escape_mysql_text(conn, md5);
     char *esc_desc = escape_mysql_text(conn, desc);
     char *esc_model = escape_mysql_text(conn, model);
     char *esc_summary = escape_mysql_text(conn, summary);
     char *esc_tags = escape_mysql_text(conn, tags);
+    char *esc_outline = escape_mysql_text(conn, outline);
     char *esc_blob = NULL;
-    if (!esc_md5 || !esc_desc || !esc_model || !esc_summary || !esc_tags) goto fail;
+    if (!esc_md5 || !esc_desc || !esc_model || !esc_summary || !esc_tags || !esc_outline) {
+        if (err_buf && err_buf_len > 0) snprintf(err_buf, err_buf_len, "write global cache failed: escape alloc failed");
+        goto fail;
+    }
 
     if (vec) {
         int blob_len = embedding_dimension * (int)sizeof(float);
         esc_blob = escape_blob(conn, vec, blob_len);
-        if (!esc_blob) goto fail;
+        if (!esc_blob) {
+            if (err_buf && err_buf_len > 0) snprintf(err_buf, err_buf_len, "write global cache failed: blob escape alloc failed");
+            goto fail;
+        }
     }
 
-    snprintf(sql, sizeof(sql), 
-             "insert into global_ai_cache (md5, description, embedding, summary, outline_json) "
-             "values ('%s', '%s', '%s', '%s', '%s') "
-             "on duplicate key update description=values(description), "
-             "embedding=values(embedding), summary=values(summary), outline_json=values(outline_json)",
-             md5, esc_desc, esc_blob, esc_summary, esc_tags);
-             
-    ret = mysql_query(conn, sql) == 0 ? 0 : -1;
+    sql_len = (int)strlen(esc_md5)
+            + (int)strlen(esc_desc)
+            + (int)strlen(esc_model)
+            + (int)strlen(esc_summary)
+            + (int)strlen(esc_tags)
+            + (int)strlen(esc_outline)
+            + (esc_blob ? (int)strlen(esc_blob) : 0)
+            + 4096;
+    sql = (char *)malloc(sql_len);
+    if (!sql) {
+        if (err_buf && err_buf_len > 0) snprintf(err_buf, err_buf_len, "write global cache failed: sql alloc failed");
+        goto fail;
+    }
+
+    if (esc_blob) {
+        written = snprintf(sql, sql_len,
+                           "insert into file_ai_desc "
+                           "(md5, description, embedding, faiss_id, model, status, summary, tags_json, outline_json) "
+                           "values ('%s', '%s', '%s', -1, '%s', 1, '%s', '%s', '%s') "
+                           "on duplicate key update description=values(description), "
+                           "embedding=values(embedding), model=values(model), status=values(status), "
+                           "summary=values(summary), tags_json=values(tags_json), outline_json=values(outline_json)",
+                           esc_md5, esc_desc, esc_blob, esc_model, esc_summary, esc_tags, esc_outline);
+    } else {
+        written = snprintf(sql, sql_len,
+                           "insert into file_ai_desc "
+                           "(md5, description, faiss_id, model, status, summary, tags_json, outline_json) "
+                           "values ('%s', '%s', -1, '%s', 2, '%s', '%s', '%s') "
+                           "on duplicate key update description=values(description), "
+                           "embedding=NULL, faiss_id=values(faiss_id), "
+                           "model=values(model), status=values(status), summary=values(summary), "
+                           "tags_json=values(tags_json), outline_json=values(outline_json)",
+                           esc_md5, esc_desc, esc_model, esc_summary, esc_tags, esc_outline);
+    }
+    if (written < 0 || written >= sql_len) {
+        if (err_buf && err_buf_len > 0) snprintf(err_buf, err_buf_len, "write global cache failed: sql truncated");
+        goto fail;
+    }
+
+    if (mysql_query(conn, sql) != 0) {
+        LOG(UTIL_LOG_MODULE, UTIL_LOG_PROC,
+            "write_global_cache mysql_query failed: %s\n", mysql_error(conn));
+        if (err_buf && err_buf_len > 0) {
+            snprintf(err_buf, err_buf_len, "write global cache failed: %s", mysql_error(conn));
+        }
+        goto fail;
+    }
+    ret = 0;
 
 fail:
     if (esc_md5) free(esc_md5);
@@ -519,17 +569,24 @@ fail:
     if (esc_model) free(esc_model);
     if (esc_summary) free(esc_summary);
     if (esc_tags) free(esc_tags);
+    if (esc_outline) free(esc_outline);
     if (esc_blob) free(esc_blob);
+    if (sql) free(sql);
     return ret;
 }
 
 /* 写用户私有记录 user_file_ai_desc + 更新 parse_status */
 static int write_user_ai_record(MYSQL *conn, const char *user, const char *md5, 
                                 const char *desc, const float *vec, 
-                                const char *summary, const char *tags, const char *status, const char *model) 
+                                const char *summary, const char *tags,
+                                const char *status, const char *model,
+                                char *err_buf, size_t err_buf_len)
 {
-    char sql[4096] = {0};
-    int ret = 0;
+    char *sql = NULL;
+    int ret = -1;
+    int sql_len = 0;
+    int written = 0;
+    int status_num = (status && strcmp(status, "success") == 0) ? 1 : 2;
     
     char *esc_user = escape_mysql_text(conn, user);
     char *esc_md5 = escape_mysql_text(conn, md5);
@@ -540,22 +597,69 @@ static int write_user_ai_record(MYSQL *conn, const char *user, const char *md5,
     char *esc_status = escape_mysql(conn, status);
     char *esc_blob = NULL;
     if (!esc_user || !esc_md5 || !esc_desc || !esc_model ||
-        !esc_summary || !esc_tags || !esc_status) goto fail;
+        !esc_summary || !esc_tags || !esc_status) {
+        if (err_buf && err_buf_len > 0) snprintf(err_buf, err_buf_len, "write user record failed: escape alloc failed");
+        goto fail;
+    }
 
     if (vec) {
         int blob_len = embedding_dimension * (int)sizeof(float);
         esc_blob = escape_blob(conn, vec, blob_len);
-        if (!esc_blob) goto fail;
+        if (!esc_blob) {
+            if (err_buf && err_buf_len > 0) snprintf(err_buf, err_buf_len, "write user record failed: blob escape alloc failed");
+            goto fail;
+        }
     }
 
-    snprintf(sql, sizeof(sql),
-             "insert into user_file_ai_desc (user, md5, description, embedding, summary, tags, parse_status) "
-             "values ('%s', '%s', '%s', '%s', '%s', '%s', '%s') "
-             "on duplicate key update description=values(description), "
-             "embedding=values(embedding), summary=values(summary), tags=values(tags), parse_status=values(parse_status)",
-             esc_user, esc_md5, esc_desc, esc_blob, esc_summary, esc_tags, esc_status);
-             
-    ret = mysql_query(conn, sql) == 0 ? 0 : -1;
+    sql_len = (int)strlen(esc_user)
+            + (int)strlen(esc_md5)
+            + (int)strlen(esc_desc)
+            + (int)strlen(esc_model)
+            + (int)strlen(esc_summary)
+            + (int)strlen(esc_tags)
+            + (int)strlen(esc_status)
+            + (esc_blob ? (int)strlen(esc_blob) : 0)
+            + 4096;
+    sql = (char *)malloc(sql_len);
+    if (!sql) {
+        if (err_buf && err_buf_len > 0) snprintf(err_buf, err_buf_len, "write user record failed: sql alloc failed");
+        goto fail;
+    }
+
+    if (esc_blob) {
+        written = snprintf(sql, sql_len,
+                           "insert into user_file_ai_desc "
+                           "(user, md5, description, embedding, faiss_id, model, status, summary, tags_json, parse_status) "
+                           "values ('%s', '%s', '%s', '%s', -1, '%s', %d, '%s', '%s', '%s') "
+                           "on duplicate key update description=values(description), "
+                           "embedding=values(embedding), model=values(model), status=values(status), "
+                           "summary=values(summary), tags_json=values(tags_json), parse_status=values(parse_status), error_msg=NULL",
+                           esc_user, esc_md5, esc_desc, esc_blob, esc_model, status_num, esc_summary, esc_tags, esc_status);
+    } else {
+        written = snprintf(sql, sql_len,
+                           "insert into user_file_ai_desc "
+                           "(user, md5, description, faiss_id, model, status, summary, tags_json, parse_status) "
+                           "values ('%s', '%s', '%s', -1, '%s', %d, '%s', '%s', '%s') "
+                           "on duplicate key update description=values(description), "
+                           "embedding=NULL, faiss_id=values(faiss_id), "
+                           "model=values(model), status=values(status), summary=values(summary), "
+                           "tags_json=values(tags_json), parse_status=values(parse_status)",
+                           esc_user, esc_md5, esc_desc, esc_model, status_num, esc_summary, esc_tags, esc_status);
+    }
+    if (written < 0 || written >= sql_len) {
+        if (err_buf && err_buf_len > 0) snprintf(err_buf, err_buf_len, "write user record failed: sql truncated");
+        goto fail;
+    }
+
+    if (mysql_query(conn, sql) != 0) {
+        LOG(UTIL_LOG_MODULE, UTIL_LOG_PROC,
+            "write_user_ai_record mysql_query failed: %s\n", mysql_error(conn));
+        if (err_buf && err_buf_len > 0) {
+            snprintf(err_buf, err_buf_len, "write user record failed: %s", mysql_error(conn));
+        }
+        goto fail;
+    }
+    ret = 0;
 
 fail:
     if (esc_user) free(esc_user);
@@ -566,6 +670,7 @@ fail:
     if (esc_tags) free(esc_tags);
     if (esc_status) free(esc_status);
     if (esc_blob) free(esc_blob);
+    if (sql) free(sql);
     return ret;
 }
 
@@ -985,6 +1090,7 @@ static int process_one_task(MYSQL *conn, long task_id, const char *user,
     char summary[512] = {0};
     char tags_json[2048] = {0};
     char outline_json[2048] = {0};
+    char write_error[512] = {0};
     float *vec = NULL;
     int text_len = 0;
     char api_key[256] = {0};
@@ -1152,19 +1258,25 @@ static int process_one_task(MYSQL *conn, long task_id, const char *user,
     const char *final_error_msg = embedding_error;
 
     /* 9. 写入各表 */
-    if (write_global_cache(conn, md5, description, vec, summary, tags_json,
-                           embedding_model) != 0) {
-        LOG(UTIL_LOG_MODULE, UTIL_LOG_PROC, "write_global_cache failed\n");
+    if (write_global_cache(conn, md5, description, vec, summary, tags_json, outline_json,
+                           embedding_model, write_error, sizeof(write_error)) != 0) {
+        LOG(UTIL_LOG_MODULE, UTIL_LOG_PROC, "write_global_cache failed: %s\n",
+            write_error[0] ? write_error : "unknown");
         if (vec) free(vec);
-        handle_task_failure(conn, task_id, retry_count, "write global cache failed");
+        handle_task_failure(conn, task_id, retry_count,
+                            write_error[0] ? write_error : "write global cache failed");
         return -1;
     }
 
+    write_error[0] = '\0';
     if (write_user_ai_record(conn, user, md5, description, vec, summary, tags_json,
-                             embedding_model, final_parse_status) != 0) {
-        LOG(UTIL_LOG_MODULE, UTIL_LOG_PROC, "write_user_ai_record failed\n");
+                             final_parse_status, embedding_model,
+                             write_error, sizeof(write_error)) != 0) {
+        LOG(UTIL_LOG_MODULE, UTIL_LOG_PROC, "write_user_ai_record failed: %s\n",
+            write_error[0] ? write_error : "unknown");
         if (vec) free(vec);
-        handle_task_failure(conn, task_id, retry_count, "write user record failed");
+        handle_task_failure(conn, task_id, retry_count,
+                            write_error[0] ? write_error : "write user record failed");
         return -1;
     }
 
