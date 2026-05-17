@@ -51,6 +51,8 @@ static char vl_model[64] = {0};
 static int  embedding_dimension = 1024;
 static char web_server_ip[30] = {0};
 static char web_server_port[10] = {0};
+static char storage_web_server_ip[30] = {0};
+static char storage_web_server_port[10] = {0};
 static char faiss_user_index_dir[512] = {0};
 static char faiss_lock_dir[512] = "/tmp/faiss_locks";
 /* DashScope API Key：cfg.json 优先（出厂可用） */
@@ -86,6 +88,8 @@ static void read_cfg()
     get_cfg_value(CFG_PATH, "faiss", "user_index_dir", faiss_user_index_dir);
     get_cfg_value(CFG_PATH, "web_server", "ip", web_server_ip);
     get_cfg_value(CFG_PATH, "web_server", "port", web_server_port);
+    get_cfg_value(CFG_PATH, "storage_web_server", "ip", storage_web_server_ip);
+    get_cfg_value(CFG_PATH, "storage_web_server", "port", storage_web_server_port);
     get_cfg_value(CFG_PATH, "dashscope", "api_key", dashscope_api_key);
 
     /* 自动双链阈值（可选） */
@@ -101,8 +105,9 @@ static void read_cfg()
     if (auto_link_type_limit < 0) auto_link_type_limit = 0;
 
     LOG(UTIL_LOG_MODULE, UTIL_LOG_PROC,
-        "config loaded: mysql=%s, dim=%d, web=%s:%s, vl=%s, key=%s, topk=%d, th=%.2f, type_fallback=%d/%d\n",
+        "config loaded: mysql=%s, dim=%d, web=%s:%s, storage=%s:%s, vl=%s, key=%s, topk=%d, th=%.2f, type_fallback=%d/%d\n",
         mysql_db, embedding_dimension, web_server_ip, web_server_port,
+        storage_web_server_ip, storage_web_server_port,
         vl_model, strlen(dashscope_api_key) > 0 ? "configured" : "EMPTY",
         auto_link_topk, auto_link_threshold, auto_link_type_fallback, auto_link_type_limit);
 }
@@ -159,12 +164,24 @@ static size_t download_write_cb(void *ptr, size_t size, size_t nmemb, void *user
     return (written > 0) ? (size_t)written : 0;
 }
 
-static int download_file(const char *url, const char *save_path)
+static int download_file(const char *url, const char *save_path,
+                         char *err_buf, int err_buf_len)
 {
     CURL *curl = curl_easy_init();
-    if (!curl) return -1;
+    if (!curl) {
+        if (err_buf && err_buf_len > 0) {
+            snprintf(err_buf, err_buf_len, "curl init failed");
+        }
+        return -1;
+    }
     int fd = open(save_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (fd < 0) { curl_easy_cleanup(curl); return -1; }
+    if (fd < 0) {
+        if (err_buf && err_buf_len > 0) {
+            snprintf(err_buf, err_buf_len, "open temp file failed: %s", strerror(errno));
+        }
+        curl_easy_cleanup(curl);
+        return -1;
+    }
     curl_easy_setopt(curl, CURLOPT_URL, url);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, download_write_cb);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &fd);
@@ -175,8 +192,42 @@ static int download_file(const char *url, const char *save_path)
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
     close(fd);
     curl_easy_cleanup(curl);
-    if (res != CURLE_OK || http_code != 200) { remove(save_path); return -1; }
+    if (res != CURLE_OK || http_code != 200) {
+        if (err_buf && err_buf_len > 0) {
+            snprintf(err_buf, err_buf_len, "download failed: curl=%s, http=%ld, url=%s",
+                     curl_easy_strerror(res), http_code, url ? url : "");
+        }
+        remove(save_path);
+        return -1;
+    }
     return 0;
+}
+
+static void build_storage_download_url(const char *db_url, char *out, int out_len)
+{
+    if (!out || out_len <= 0) return;
+    out[0] = '\0';
+    if (!db_url || strlen(db_url) == 0) return;
+
+    const char *path_part = strstr(db_url, "/group");
+    if (!path_part && strncmp(db_url, "group", 5) == 0) path_part = db_url;
+    if (path_part && strlen(storage_web_server_ip) > 0 &&
+        strlen(storage_web_server_port) > 0) {
+        snprintf(out, out_len, "http://%s:%s%s%s",
+                 storage_web_server_ip, storage_web_server_port,
+                 path_part[0] == '/' ? "" : "/", path_part);
+        return;
+    }
+
+    if (strncmp(db_url, "http://", 7) == 0 ||
+        strncmp(db_url, "https://", 8) == 0) {
+        strncpy(out, db_url, out_len - 1);
+        out[out_len - 1] = '\0';
+        return;
+    }
+
+    strncpy(out, db_url, out_len - 1);
+    out[out_len - 1] = '\0';
 }
 
 /* 获取文件 FastDFS URL */
@@ -982,10 +1033,20 @@ static int process_one_task(MYSQL *conn, long task_id, const char *user,
     /* 2. 下载文件（图片不下载，直接用 URL 走 VL） */
     int is_image = is_image_type(type);
     if (!is_image) {
+        build_storage_download_url(db_url, download_url, sizeof(download_url));
+        if (strlen(download_url) == 0) {
+            LOG(UTIL_LOG_MODULE, UTIL_LOG_PROC, "empty download URL for md5=%.32s\n", md5);
+            handle_task_failure(conn, task_id, retry_count, "empty download URL");
+            return -1;
+        }
         snprintf(file_path, sizeof(file_path), "/tmp/knowledge_%ld_%s", task_id, md5);
-        if (download_file(download_url, file_path) != 0) {
-            LOG(UTIL_LOG_MODULE, UTIL_LOG_PROC, "download failed: %s\n", download_url);
-            handle_task_failure(conn, task_id, retry_count, "download failed");
+        char download_err[1024] = {0};
+        if (download_file(download_url, file_path,
+                          download_err, sizeof(download_err)) != 0) {
+            LOG(UTIL_LOG_MODULE, UTIL_LOG_PROC, "%s\n",
+                strlen(download_err) > 0 ? download_err : "download failed");
+            handle_task_failure(conn, task_id, retry_count,
+                                strlen(download_err) > 0 ? download_err : "download failed");
             return -1;
         }
     }
