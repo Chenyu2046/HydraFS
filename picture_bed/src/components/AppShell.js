@@ -1,6 +1,5 @@
 import React from 'react';
 import styled from '@emotion/styled';
-import Sidebar from './Sidebar';
 import Topbar from './Topbar';
 
 const Shell = styled.div`
@@ -10,7 +9,6 @@ const Shell = styled.div`
 `;
 
 const Main = styled.main`
-  margin-left: 64px;
   display: flex; flex-direction: column;
   min-height: 100vh;
 `;
@@ -29,7 +27,6 @@ const Content = styled.div`
 
 const AppShell = ({ children, crumbs, transparentTopbar = false, flushContent = false }) => (
   <Shell>
-    <Sidebar />
     <Main>
       <Topbar crumbs={crumbs} transparent={transparentTopbar} />
       <Content className="hydra-enter" $flush={flushContent}>{children}</Content>

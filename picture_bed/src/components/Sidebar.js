@@ -80,8 +80,8 @@ const Sidebar = () => {
   const loc = useLocation();
   return (
     <Rail>
-      <Tooltip title="HydraFS · Distributed Knowledge Cloud" placement="right">
-        <Brand to="/">H</Brand>
+      <Tooltip title="LinkCloud · 万物可链 · 智在云端" placement="right">
+        <Brand to="/">L</Brand>
       </Tooltip>
       <NavList>
         {items.map(it => (

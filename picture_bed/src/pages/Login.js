@@ -9,6 +9,7 @@ import { useThemeMode } from '../contexts/ThemeContext';
 import { loginUser, registerUser } from '../services/auth';
 import MiniGraph from '../components/MiniGraph';
 import { MOCK_GRAPH } from '../mock/graph';
+import Logo from '../components/Logo';
 
 const Page = styled.div`
   min-height: 100vh;
@@ -194,8 +195,8 @@ const Login = () => {
     <Page>
       <Hero>
         <Brand>
-          <span className="logo">H</span>
-          <span>HydraFS</span>
+          <Logo size={32} />
+          <span>LinkCloud</span>
         </Brand>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
           <Headline>分布式存储 +<br /><span>AI 双链知识图谱</span></Headline>

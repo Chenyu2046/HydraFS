@@ -440,7 +440,7 @@ const Home = () => {
               <NodeIndexOutlined /> FAISS index
             </span>
           </span>
-          <span style={{ fontFamily: 'JetBrains Mono, monospace' }}>HydraFS v1.0</span>
+          <span style={{ fontFamily: 'JetBrains Mono, monospace' }}>LinkCloud v1.0</span>
         </div>
       </ContentArea>
 

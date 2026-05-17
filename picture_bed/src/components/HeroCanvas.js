@@ -1,6 +1,7 @@
 import React from 'react';
 import styled from '@emotion/styled';
 import { NavLink } from 'react-router-dom';
+import Logo from './Logo';
 
 /**
  * HeroCanvas
@@ -187,18 +188,20 @@ const Window = styled.div`
 `;
 
 const NAV_ITEMS = [
-  { to: '/files',     label: 'Storage' },
-  { to: '/knowledge', label: 'AI Insight' },
-  { to: '/graph',     label: 'Knowledge Graph' },
-  { to: '/shared',    label: 'Shared' },
+  { to: '/files',     label: '文件' },
+  { to: '/knowledge', label: 'AI 洞察' },
+  { to: '/graph',     label: '知识图谱' },
+  { to: '/shared',    label: '分享' },
 ];
 
 export const HeroCanvas = ({ children }) => (
   <Canvas>
     <PillNav>
       <NavLink to="/" className="brand">
-        <span className="dot">H</span>
-        HydraFS
+        <span className="dot" style={{ background: 'transparent', padding: 0 }}>
+          <Logo size={20} glow={false} />
+        </span>
+        LinkCloud
       </NavLink>
       {NAV_ITEMS.map(it => (
         <NavLink key={it.to} to={it.to}
@@ -206,13 +209,13 @@ export const HeroCanvas = ({ children }) => (
           {it.label}
         </NavLink>
       ))}
-      <NavLink to="/files" className="cta">Open Workspace</NavLink>
+      <NavLink to="/files" className="cta">进入工作台</NavLink>
     </PillNav>
     <Inner>{children}</Inner>
   </Canvas>
 );
 
-export const ProductWindow = ({ url = 'hydrafs.app/graph', live = true, children }) => (
+export const ProductWindow = ({ url = 'linkcloud.app/graph', live = true, children }) => (
   <Window>
     <div className="titlebar">
       <span className="dots"><i /><i /><i /></span>
