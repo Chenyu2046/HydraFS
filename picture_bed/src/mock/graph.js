@@ -27,21 +27,21 @@ export const MOCK_NODES = [
 ];
 
 export const MOCK_EDGES = [
-  { source: 'n1', target: 'n2' },
-  { source: 'n1', target: 'n6' },
-  { source: 'n2', target: 'n6' },
-  { source: 'n2', target: 'n10' },
-  { source: 'n3', target: 'n4' },
-  { source: 'n3', target: 'n8' },
-  { source: 'n4', target: 'n8' },
-  { source: 'n5', target: 'n9' },
-  { source: 'n8', target: 'n9' },
-  { source: 'n8', target: 'n12' },
-  { source: 'n9', target: 'n12' },
-  { source: 'n11', target: 'n2' },
-  { source: 'n11', target: 'n8' },
-  { source: 'n7', target: 'n10' },
-  { source: 'n7', target: 'n2' },
+  { source: 'n1', target: 'n2', kind: 'related' },
+  { source: 'n1', target: 'n6', kind: 'implicit' },
+  { source: 'n2', target: 'n6', kind: 'implicit' },
+  { source: 'n2', target: 'n10', kind: 'related' },
+  { source: 'n3', target: 'n4', kind: 'related' },
+  { source: 'n3', target: 'n8', kind: 'implicit' },
+  { source: 'n4', target: 'n8', kind: 'related' },
+  { source: 'n5', target: 'n9', kind: 'related' },
+  { source: 'n8', target: 'n9', kind: 'implicit' },
+  { source: 'n8', target: 'n12', kind: 'related' },
+  { source: 'n9', target: 'n12', kind: 'implicit' },
+  { source: 'n11', target: 'n2', kind: 'same_type' },
+  { source: 'n11', target: 'n8', kind: 'same_type' },
+  { source: 'n7', target: 'n10', kind: 'related' },
+  { source: 'n7', target: 'n2', kind: 'implicit' },
 ];
 
 export const MOCK_GRAPH = { nodes: MOCK_NODES, links: MOCK_EDGES };
@@ -68,9 +68,8 @@ export { FILE_TYPES };
 
 /**
  * 把真实 files[] 转成图谱数据。
- * 当前后端尚未提供节点之间的真实关系（tags / wiki backlinks），
- * 因此只返回节点，links 留空 —— 不再合成"看起来像但其实是随机"的边。
- * 真实关系上线后，在此处替换为基于后端响应的边构造逻辑。
+ * 后端 related/backlinks 关系可用时由 Graph 页补充真实边。
+ * 这里仅补一层同类型结构边，避免空图，同时不伪造语义相似度。
  * 文件不可用时返回 null，由调用方决定是否回退到 MOCK_GRAPH。
  */
 export const buildGraphFromFiles = (files) => {
@@ -81,7 +80,27 @@ export const buildGraphFromFiles = (files) => {
     type: classifyFileType(f.type),
     tags: [],
   }));
-  return { nodes, links: [] };
+  const links = buildSameTypeLinks(nodes);
+  return { nodes, links };
+};
+
+export const buildSameTypeLinks = (nodes, limitPerType = 8) => {
+  const links = [];
+  const grouped = nodes.reduce((acc, node) => {
+    const key = node.type || 'other';
+    acc[key] = acc[key] || [];
+    acc[key].push(node);
+    return acc;
+  }, {});
+
+  Object.values(grouped).forEach(group => {
+    group.slice(0, limitPerType + 1).forEach((node, index, arr) => {
+      const next = arr[index + 1];
+      if (next) links.push({ source: node.id, target: next.id, kind: 'same_type' });
+    });
+  });
+
+  return links;
 };
 
 export const classifyFileType = (ext) => {

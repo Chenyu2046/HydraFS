@@ -58,6 +58,8 @@ static char dashscope_api_key[256] = {0};
 /* 自动双链阈值 */
 static int   auto_link_topk = 5;
 static float auto_link_threshold = 0.55f;
+static int   auto_link_type_fallback = 1;
+static int   auto_link_type_limit = 3;
 
 static int g_running = 1;
 
@@ -87,17 +89,22 @@ static void read_cfg()
     get_cfg_value(CFG_PATH, "dashscope", "api_key", dashscope_api_key);
 
     /* 自动双链阈值（可选） */
-    char tk[16] = {0}, th[16] = {0};
+    char tk[16] = {0}, th[16] = {0}, tf[16] = {0}, tl[16] = {0};
     get_cfg_value(CFG_PATH, "dashscope", "auto_link_topk", tk);
     get_cfg_value(CFG_PATH, "dashscope", "auto_link_threshold", th);
+    get_cfg_value(CFG_PATH, "dashscope", "auto_link_type_fallback", tf);
+    get_cfg_value(CFG_PATH, "dashscope", "auto_link_type_limit", tl);
     if (strlen(tk) > 0) auto_link_topk = atoi(tk);
     if (strlen(th) > 0) auto_link_threshold = (float)atof(th);
+    if (strlen(tf) > 0) auto_link_type_fallback = atoi(tf);
+    if (strlen(tl) > 0) auto_link_type_limit = atoi(tl);
+    if (auto_link_type_limit < 0) auto_link_type_limit = 0;
 
     LOG(UTIL_LOG_MODULE, UTIL_LOG_PROC,
-        "config loaded: mysql=%s, dim=%d, web=%s:%s, vl=%s, key=%s, topk=%d, th=%.2f\n",
+        "config loaded: mysql=%s, dim=%d, web=%s:%s, vl=%s, key=%s, topk=%d, th=%.2f, type_fallback=%d/%d\n",
         mysql_db, embedding_dimension, web_server_ip, web_server_port,
         vl_model, strlen(dashscope_api_key) > 0 ? "configured" : "EMPTY",
-        auto_link_topk, auto_link_threshold);
+        auto_link_topk, auto_link_threshold, auto_link_type_fallback, auto_link_type_limit);
 }
 
 /* ---- 工具函数 ---- */
@@ -218,6 +225,43 @@ static int is_image_type(const char *type)
     return 0;
 }
 
+static const char *broad_file_category(const char *type)
+{
+    if (!type || strlen(type) == 0) return "other";
+    if (is_image_type(type)) return "image";
+    if (strcasecmp(type, "pdf") == 0) return "document";
+    if (strcasecmp(type, "doc") == 0 || strcasecmp(type, "docx") == 0 ||
+        strcasecmp(type, "ppt") == 0 || strcasecmp(type, "pptx") == 0 ||
+        strcasecmp(type, "xls") == 0 || strcasecmp(type, "xlsx") == 0) {
+        return "document";
+    }
+    if (strcasecmp(type, "c") == 0 || strcasecmp(type, "cpp") == 0 ||
+        strcasecmp(type, "h") == 0 || strcasecmp(type, "hpp") == 0 ||
+        strcasecmp(type, "py") == 0 || strcasecmp(type, "js") == 0 ||
+        strcasecmp(type, "ts") == 0 || strcasecmp(type, "jsx") == 0 ||
+        strcasecmp(type, "tsx") == 0 || strcasecmp(type, "java") == 0 ||
+        strcasecmp(type, "go") == 0 || strcasecmp(type, "rs") == 0 ||
+        strcasecmp(type, "rb") == 0 || strcasecmp(type, "php") == 0 ||
+        strcasecmp(type, "sh") == 0 || strcasecmp(type, "bat") == 0) {
+        return "code";
+    }
+    if (is_text_type(type)) return "text";
+    if (strcasecmp(type, "zip") == 0 || strcasecmp(type, "rar") == 0 ||
+        strcasecmp(type, "7z") == 0 || strcasecmp(type, "tar") == 0 ||
+        strcasecmp(type, "gz") == 0) {
+        return "archive";
+    }
+    if (strcasecmp(type, "mp3") == 0 || strcasecmp(type, "wav") == 0 ||
+        strcasecmp(type, "flac") == 0 || strcasecmp(type, "aac") == 0) {
+        return "audio";
+    }
+    if (strcasecmp(type, "mp4") == 0 || strcasecmp(type, "mov") == 0 ||
+        strcasecmp(type, "avi") == 0 || strcasecmp(type, "mkv") == 0) {
+        return "video";
+    }
+    return "other";
+}
+
 static int read_text_file(const char *path, char *out, int max_len)
 {
     int fd = open(path, O_RDONLY);
@@ -268,6 +312,21 @@ static void extract_tags_from_wikilinks(const char *text, char *tags_json, int t
         p = end + 2;
     }
     snprintf(tags_json, tags_size, "[%s]", buf);
+}
+
+typedef struct {
+    char md5[260];
+    char name[260];
+    float score;
+} AutoLinkCandidate;
+
+static int candidate_list_contains(const AutoLinkCandidate *cands, int cnt, const char *md5)
+{
+    if (!cands || !md5) return 0;
+    for (int i = 0; i < cnt; i++) {
+        if (strcmp(cands[i].md5, md5) == 0) return 1;
+    }
+    return 0;
 }
 
 static int is_space_char(char ch)
@@ -605,7 +664,8 @@ static int update_user_parse_state(MYSQL *conn, const char *user, const char *md
  * 这是 Obsidian 风格"上传自动连接"的真双链核心。
  */
 static int auto_build_implicit_links(MYSQL *conn, const char *user,
-                                     const char *self_md5, const float *self_vec)
+                                     const char *self_md5, const char *self_type,
+                                     const float *self_vec)
 {
     if (!conn || !user || !self_md5 || !self_vec) return -1;
     if (auto_link_topk <= 0) return 0;
@@ -632,9 +692,8 @@ static int auto_build_implicit_links(MYSQL *conn, const char *user,
     MYSQL_RES *res = mysql_store_result(conn);
     if (!res) return -1;
 
-    typedef struct { char md5[260]; char name[260]; float score; } Candidate;
     int cap = 64, cnt = 0;
-    Candidate *cands = (Candidate *)malloc(sizeof(Candidate) * cap);
+    AutoLinkCandidate *cands = (AutoLinkCandidate *)malloc(sizeof(AutoLinkCandidate) * cap);
     if (!cands) { mysql_free_result(res); return -1; }
 
     int blob_len = embedding_dimension * (int)sizeof(float);
@@ -650,7 +709,7 @@ static int auto_build_implicit_links(MYSQL *conn, const char *user,
 
         if (cnt >= cap) {
             cap *= 2;
-            Candidate *p = (Candidate *)realloc(cands, sizeof(Candidate) * cap);
+            AutoLinkCandidate *p = (AutoLinkCandidate *)realloc(cands, sizeof(AutoLinkCandidate) * cap);
             if (!p) break;
             cands = p;
         }
@@ -667,11 +726,9 @@ static int auto_build_implicit_links(MYSQL *conn, const char *user,
     mysql_free_result(res);
 
     if (cnt == 0) {
-        free(cands);
         LOG(UTIL_LOG_MODULE, UTIL_LOG_PROC,
             "auto_link[%.32s]: no similar files (th=%.2f)\n",
             self_md5, auto_link_threshold);
-        return 0;
     }
 
     /* 选 top-K（选择排序，K<=10，n 数百级别足够） */
@@ -681,7 +738,7 @@ static int auto_build_implicit_links(MYSQL *conn, const char *user,
         for (int j = i + 1; j < cnt; j++)
             if (cands[j].score > cands[max_idx].score) max_idx = j;
         if (max_idx != i) {
-            Candidate tmp = cands[i]; cands[i] = cands[max_idx]; cands[max_idx] = tmp;
+            AutoLinkCandidate tmp = cands[i]; cands[i] = cands[max_idx]; cands[max_idx] = tmp;
         }
     }
 
@@ -734,6 +791,81 @@ static int auto_build_implicit_links(MYSQL *conn, const char *user,
             self_md5, cands[i].md5, cands[i].score);
 
         free(eu); free(es); free(ed); free(en);
+    }
+
+    if (auto_link_type_fallback && written < auto_link_topk && auto_link_type_limit > 0) {
+        const char *self_category = broad_file_category(self_type);
+        int fallback_limit = auto_link_topk - written;
+        if (fallback_limit > auto_link_type_limit) fallback_limit = auto_link_type_limit;
+
+        char *eu = escape_mysql(conn, user);
+        char *es = escape_mysql(conn, self_md5);
+        if (eu && es && strcmp(self_category, "other") != 0) {
+            char fsql[2048] = {0};
+            snprintf(fsql, sizeof(fsql),
+                     "SELECT uad.md5, COALESCE(ufl.file_name, uad.md5), COALESCE(fi.type, '') "
+                     "FROM user_file_ai_desc uad "
+                     "JOIN user_file_list ufl ON ufl.user=uad.user AND ufl.md5=uad.md5 "
+                     "LEFT JOIN file_info fi ON fi.md5=uad.md5 "
+                     "WHERE uad.user='%s' AND uad.md5 <> '%s' "
+                     "AND uad.status=1 AND uad.parse_status='success' "
+                     "ORDER BY uad.updated_at DESC LIMIT 50",
+                     eu, es);
+
+            if (mysql_query(conn, fsql) == 0) {
+                MYSQL_RES *fres = mysql_store_result(conn);
+                if (fres) {
+                    MYSQL_ROW row;
+                    while (written < auto_link_topk && fallback_limit > 0 &&
+                           (row = mysql_fetch_row(fres)) != NULL) {
+                        if (!row[0] || strcmp(broad_file_category(row[2]), self_category) != 0) {
+                            continue;
+                        }
+                        if (candidate_list_contains(cands, k, row[0])) {
+                            continue;
+                        }
+
+                        char *ed = escape_mysql(conn, row[0]);
+                        char *en = escape_mysql(conn, row[1] ? row[1] : row[0]);
+                        if (!ed || !en) {
+                            if (ed) free(ed);
+                            if (en) free(en);
+                            continue;
+                        }
+
+                        char ins[1024];
+                        snprintf(ins, sizeof(ins),
+                            "INSERT INTO wiki_link (user, src_md5, dst_md5, dst_name, link_type, score) "
+                            "VALUES ('%s','%s','%s','%s','implicit',0.0000) "
+                            "ON DUPLICATE KEY UPDATE score=VALUES(score), dst_name=VALUES(dst_name)",
+                            eu, es, ed, en);
+                        if (mysql_query(conn, ins) == 0) {
+                            written++;
+                            fallback_limit--;
+                            LOG(UTIL_LOG_MODULE, UTIL_LOG_PROC,
+                                "auto_link[%.32s] -> %.32s by category=%s\n",
+                                self_md5, row[0], self_category);
+                        }
+
+                        snprintf(ins, sizeof(ins),
+                            "INSERT INTO wiki_link (user, src_md5, dst_md5, dst_name, link_type, score) "
+                            "VALUES ('%s','%s','%s','%s','implicit',0.0000) "
+                            "ON DUPLICATE KEY UPDATE score=VALUES(score), dst_name=VALUES(dst_name)",
+                            eu, ed, es, es);
+                        mysql_query(conn, ins);
+
+                        free(ed);
+                        free(en);
+                    }
+                    mysql_free_result(fres);
+                }
+            } else {
+                LOG(UTIL_LOG_MODULE, UTIL_LOG_PROC,
+                    "auto_link type fallback query failed: %s\n", mysql_error(conn));
+            }
+        }
+        if (eu) free(eu);
+        if (es) free(es);
     }
 
     free(cands);
@@ -1026,7 +1158,7 @@ static int process_one_task(MYSQL *conn, long task_id, const char *user,
 
     /* 10.5 自动隐式双链：上传即建立 Obsidian 风格的反向连接 */
     if (strcmp(final_parse_status, "success") == 0 && vec != NULL) {
-        int n = auto_build_implicit_links(conn, user, md5, vec);
+        int n = auto_build_implicit_links(conn, user, md5, type, vec);
         if (n < 0) {
             LOG(UTIL_LOG_MODULE, UTIL_LOG_PROC,
                 "auto_build_implicit_links returned error, ignore\n");

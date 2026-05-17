@@ -44,7 +44,9 @@
 		"vl_model": "qwen-vl-plus",
 		"embedding_dimension": "1024",
 		"auto_link_topk": "5",
-		"auto_link_threshold": "0.55"
+		"auto_link_threshold": "0.55",
+		"auto_link_type_fallback": "1",
+		"auto_link_type_limit": "3"
 	},
 
 	"faiss":

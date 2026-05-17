@@ -7,6 +7,7 @@ import { Input, Tag, Button, Empty, Spin, message } from 'antd';
 import { SearchOutlined, ExpandOutlined, ReloadOutlined, NodeIndexOutlined } from '@ant-design/icons';
 import { useAuth } from '../contexts/AuthContext';
 import { fetchUserImages } from '../services/images';
+import { fetchRelated } from '../services/ai';
 import { Panel, PanelHeader, Pill } from '../components/primitives';
 import { MOCK_GRAPH, buildGraphFromFiles, classifyFileType } from '../mock/graph';
 
@@ -108,6 +109,44 @@ const NodeItem = styled.button`
 
 const TYPE_KEY = { doc:'graphDoc', image:'graphImage', code:'graphCode', archive:'graphArchive', other:'graphOther' };
 
+const getNodeId = (node) => (typeof node === 'object' && node !== null ? node.id : node);
+const edgeKey = (source, target) => [getNodeId(source), getNodeId(target)].sort().join('::');
+
+const classifyRelatedKind = (reason = '') => {
+  const text = String(reason).toLowerCase();
+  if (text.includes('同类文件')) return 'same_type';
+  if (text.includes('自动关联') || text.includes('相似') || text.includes('similar') || text.includes('implicit')) return 'implicit';
+  return 'related';
+};
+
+const mergeRelatedLinks = async (graph, files, user) => {
+  const nodeIds = new Set(graph.nodes.map(n => n.id));
+  const linkByKey = new Map((graph.links || []).map(l => [edgeKey(l.source, l.target), l]));
+  const candidates = files.filter(f => f.wiki_ready === 1 && nodeIds.has(f.md5)).slice(0, 40);
+
+  const batches = await Promise.allSettled(candidates.map(f => fetchRelated(f.md5, user)));
+  batches.forEach((result, index) => {
+    if (result.status !== 'fulfilled' || !Array.isArray(result.value)) return;
+    const source = candidates[index].md5;
+    result.value.forEach(item => {
+      if (!item?.md5 || !nodeIds.has(item.md5) || item.md5 === source) return;
+      const key = edgeKey(source, item.md5);
+      const nextLink = {
+        source,
+        target: item.md5,
+        kind: classifyRelatedKind(item.reason),
+        reason: item.reason,
+      };
+      const existing = linkByKey.get(key);
+      if (!existing || existing.kind === 'same_type') {
+        linkByKey.set(key, nextLink);
+      }
+    });
+  });
+
+  return { ...graph, links: Array.from(linkByKey.values()) };
+};
+
 const Graph = () => {
   const theme = useTheme();
   const { user, logout } = useAuth();
@@ -132,7 +171,8 @@ const Graph = () => {
       const files = await fetchUserImages(user, { count: 200 });
       const built = buildGraphFromFiles(files);
       if (built && built.nodes.length >= 4) {
-        setData(built); setUsingMock(false);
+        const withRelated = await mergeRelatedLinks(built, files, user);
+        setData(withRelated); setUsingMock(false);
       } else {
         setData(MOCK_GRAPH); setUsingMock(true);
       }
@@ -189,6 +229,12 @@ const Graph = () => {
   }, [selected, hover, data.links]);
 
   const nodeColor = (n) => theme.colors[TYPE_KEY[n.type] || 'graphOther'];
+  const linkStyle = (l) => {
+    const kind = l.kind || 'related';
+    if (kind === 'implicit') return { color: theme.colors.graphEdgeHover, width: 1.2, dash: [6, 4], alpha: 0.78 };
+    if (kind === 'same_type') return { color: theme.colors.text3, width: 0.7, dash: [2, 5], alpha: 0.36 };
+    return { color: theme.colors.graphEdge, width: 1, dash: null, alpha: 0.7 };
+  };
 
   return (
     <div>
@@ -233,16 +279,39 @@ const Graph = () => {
                 nodeRelSize={5}
                 cooldownTicks={120}
                 linkColor={(l) => {
-                  if (!neighbors) return theme.colors.graphEdge;
+                  const base = linkStyle(l);
+                  if (!neighbors) return base.color;
                   const s = typeof l.source === 'object' ? l.source.id : l.source;
                   const t = typeof l.target === 'object' ? l.target.id : l.target;
-                  return (neighbors.has(s) && neighbors.has(t)) ? theme.colors.graphEdgeHover : theme.colors.graphEdge;
+                  return (neighbors.has(s) && neighbors.has(t)) ? theme.colors.graphEdgeHover : base.color;
                 }}
                 linkWidth={(l) => {
-                  if (!neighbors) return 0.6;
+                  const base = linkStyle(l);
+                  if (!neighbors) return base.width;
                   const s = typeof l.source === 'object' ? l.source.id : l.source;
                   const t = typeof l.target === 'object' ? l.target.id : l.target;
-                  return (neighbors.has(s) && neighbors.has(t)) ? 1.6 : 0.4;
+                  return (neighbors.has(s) && neighbors.has(t)) ? Math.max(1.8, base.width + 0.6) : Math.max(0.35, base.width - 0.25);
+                }}
+                linkLineDash={(l) => linkStyle(l).dash}
+                linkDirectionalParticles={(l) => l.kind === 'implicit' ? 1 : 0}
+                linkDirectionalParticleWidth={1.4}
+                linkDirectionalParticleSpeed={0.006}
+                linkCanvasObjectMode={() => 'after'}
+                linkCanvasObject={(link, ctx) => {
+                  const source = typeof link.source === 'object' ? link.source : null;
+                  const target = typeof link.target === 'object' ? link.target : null;
+                  if (!source || !target) return;
+                  const style = linkStyle(link);
+                  ctx.save();
+                  ctx.globalAlpha = style.alpha;
+                  ctx.strokeStyle = style.color;
+                  ctx.lineWidth = style.width;
+                  if (style.dash) ctx.setLineDash(style.dash);
+                  ctx.beginPath();
+                  ctx.moveTo(source.x, source.y);
+                  ctx.lineTo(target.x, target.y);
+                  ctx.stroke();
+                  ctx.restore();
                 }}
                 nodeCanvasObject={(node, ctx, scale) => {
                   const c = nodeColor(node);
@@ -288,6 +357,8 @@ const Graph = () => {
               <span><i style={{ background: theme.colors.graphCode }} />code</span>
               <span><i style={{ background: theme.colors.graphArchive }} />archive</span>
               <span><i style={{ background: theme.colors.graphOther }} />other</span>
+              <span><i style={{ background: theme.colors.graphEdgeHover }} />implicit</span>
+              <span><i style={{ background: theme.colors.text3 }} />same type</span>
             </Hint>
           </StageBody>
         </Stage>

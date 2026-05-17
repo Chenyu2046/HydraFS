@@ -1913,13 +1913,18 @@ static int handle_file_card(char *post_data)
     {
         char sql[2048] = {0};
         snprintf(sql, sizeof(sql),
-                 "SELECT uad.parse_status, uad.summary, uad.tags_json, uad.description, "
+                 "SELECT uad.parse_status, uad.summary, uad.tags_json, uad.description, uad.error_msg, "
                  "ufl.file_name, fi.type, fi.size, fi.url, "
-                 "CASE WHEN wp.id IS NOT NULL THEN 1 ELSE 0 END as wiki_ready "
+                 "CASE WHEN wp.id IS NOT NULL THEN 1 ELSE 0 END as wiki_ready, "
+                 "apt.status, apt.error_msg, apt.id "
                  "FROM user_file_list ufl "
                  "LEFT JOIN user_file_ai_desc uad ON uad.user=ufl.user AND uad.md5=ufl.md5 "
                  "LEFT JOIN file_info fi ON fi.md5=ufl.md5 "
                  "LEFT JOIN wiki_page wp ON wp.user=ufl.user AND wp.md5=ufl.md5 AND wp.status='active' "
+                 "LEFT JOIN ai_parse_task apt ON apt.id=( "
+                 "  SELECT MAX(id) FROM ai_parse_task "
+                 "  WHERE user=ufl.user AND md5=ufl.md5 "
+                 ") "
                  "WHERE ufl.user='%s' AND ufl.md5='%s' LIMIT 1",
                  escaped_user, escaped_md5);
 
@@ -1931,16 +1936,24 @@ static int handle_file_card(char *post_data)
                     cJSON *resp = cJSON_CreateObject();
                     cJSON_AddNumberToObject(resp, "code", 0);
                     cJSON *data = cJSON_CreateObject();
+                    const char *parse_status = row[0] ? row[0] : "";
+                    if (strlen(parse_status) == 0 ||
+                        (strcmp(parse_status, "pending") == 0 && row[10])) {
+                        parse_status = row[10] ? row[10] : "pending";
+                    }
                     cJSON_AddStringToObject(data, "md5", md5_item->valuestring);
-                    cJSON_AddStringToObject(data, "parse_status", row[0] ? row[0] : "pending");
+                    cJSON_AddStringToObject(data, "parse_status", parse_status);
                     cJSON_AddStringToObject(data, "summary", row[1] ? row[1] : "");
                     cJSON_AddStringToObject(data, "tags", row[2] ? row[2] : "[]");
                     cJSON_AddStringToObject(data, "description", row[3] ? row[3] : "");
-                    cJSON_AddStringToObject(data, "filename", row[4] ? row[4] : "");
-                    cJSON_AddStringToObject(data, "type", row[5] ? row[5] : "");
-                    cJSON_AddStringToObject(data, "size", row[6] ? row[6] : "0");
-                    cJSON_AddStringToObject(data, "url", row[7] ? row[7] : "");
-                    cJSON_AddNumberToObject(data, "wiki_ready", (row[8] && atoi(row[8]) > 0) ? 1 : 0);
+                    cJSON_AddStringToObject(data, "filename", row[5] ? row[5] : "");
+                    cJSON_AddStringToObject(data, "type", row[6] ? row[6] : "");
+                    cJSON_AddStringToObject(data, "size", row[7] ? row[7] : "0");
+                    cJSON_AddStringToObject(data, "url", row[8] ? row[8] : "");
+                    cJSON_AddNumberToObject(data, "wiki_ready", (row[9] && atoi(row[9]) > 0) ? 1 : 0);
+                    cJSON_AddStringToObject(data, "task_status", row[10] ? row[10] : "");
+                    cJSON_AddStringToObject(data, "error_msg", row[4] ? row[4] : (row[11] ? row[11] : ""));
+                    cJSON_AddNumberToObject(data, "task_id", row[12] ? atol(row[12]) : 0);
                     cJSON_AddItemToObject(resp, "data", data);
                     char *resp_str = cJSON_PrintUnformatted(resp);
                     if (resp_str) { printf("%s\n", resp_str); free(resp_str); }
@@ -2221,16 +2234,26 @@ static int handle_related(char *post_data)
         cJSON_AddNumberToObject(resp, "code", 0);
         cJSON *data_arr = cJSON_CreateArray();
 
-        /* 方法1：显式双链重合 — 共用同一概念的其它文件 */
-        char sql[2048] = {0};
+        /* 方法1：显式概念重合 + 直接隐式边 */
+        char sql[4096] = {0};
         snprintf(sql, sizeof(sql),
-                 "SELECT DISTINCT wl2.src_md5, ufl.file_name, wl.dst_name "
-                 "FROM wiki_link wl "
-                 "JOIN wiki_link wl2 ON wl2.user=wl.user AND wl2.dst_name=wl.dst_name AND wl2.src_md5!=wl.src_md5 "
-                 "JOIN user_file_list ufl ON ufl.user=wl2.user AND ufl.md5=wl2.src_md5 "
-                 "WHERE wl.user='%s' AND wl.src_md5='%s' "
-                 "LIMIT 3",
-                 escaped_user, escaped_md5);
+                 "SELECT related_md5, file_name, reason FROM ("
+                 "  SELECT wl2.src_md5 AS related_md5, ufl.file_name AS file_name, "
+                 "         CONCAT('共享概念：', wl.dst_name) AS reason, 1 AS rank_order "
+                 "  FROM wiki_link wl "
+                 "  JOIN wiki_link wl2 ON wl2.user=wl.user AND wl2.dst_name=wl.dst_name AND wl2.src_md5!=wl.src_md5 "
+                 "  JOIN user_file_list ufl ON ufl.user=wl2.user AND ufl.md5=wl2.src_md5 "
+                 "  WHERE wl.user='%s' AND wl.src_md5='%s' AND wl.link_type='explicit' "
+                 "  UNION ALL "
+                 "  SELECT wl.dst_md5 AS related_md5, ufl.file_name AS file_name, "
+                 "         CASE WHEN COALESCE(wl.score, 0) <= 0.0001 THEN '同类文件' ELSE '自动关联' END AS reason, "
+                 "         2 AS rank_order "
+                 "  FROM wiki_link wl "
+                 "  JOIN user_file_list ufl ON ufl.user=wl.user AND ufl.md5=wl.dst_md5 "
+                 "  WHERE wl.user='%s' AND wl.src_md5='%s' AND wl.link_type='implicit' AND wl.dst_md5 IS NOT NULL "
+                 ") r ORDER BY rank_order "
+                 "LIMIT 10",
+                 escaped_user, escaped_md5, escaped_user, escaped_md5);
 
         if (mysql_query(conn, sql) != 0) {
             query_failed = 1;
@@ -2243,13 +2266,15 @@ static int handle_related(char *post_data)
             } else {
                 MYSQL_ROW row;
                 while ((row = mysql_fetch_row(res)) != NULL) {
+                    if (!row[0] || result_array_contains_md5(data_arr, row[0])) {
+                        continue;
+                    }
                     cJSON *item = cJSON_CreateObject();
                     cJSON_AddStringToObject(item, "md5", row[0] ? row[0] : "");
                     cJSON_AddStringToObject(item, "filename", row[1] ? row[1] : "");
-                    char reason[256] = {0};
-                    snprintf(reason, sizeof(reason), "共享概念：%s", row[2] ? row[2] : "");
-                    cJSON_AddStringToObject(item, "reason", reason);
+                    cJSON_AddStringToObject(item, "reason", row[2] ? row[2] : "");
                     cJSON_AddItemToArray(data_arr, item);
+                    if (cJSON_GetArraySize(data_arr) >= 3) break;
                 }
                 mysql_free_result(res);
             }
