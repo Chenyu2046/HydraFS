@@ -39,10 +39,12 @@
 
 	"dashscope":
 	{
-		"api_key": "",
+		"api_key": "sk-7d7d92f9f5024501b69e09076e5a2978",
 		"embedding_model": "text-embedding-v3",
 		"vl_model": "qwen-vl-plus",
-		"embedding_dimension": "1024"
+		"embedding_dimension": "1024",
+		"auto_link_topk": "5",
+		"auto_link_threshold": "0.55"
 	},
 
 	"faiss":

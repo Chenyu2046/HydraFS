@@ -9,7 +9,7 @@ import {
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { fetchUserImages } from '../services/images';
-import { aiSearch, fetchApiKey } from '../services/ai';
+import { aiSearch } from '../services/ai';
 
 import { HeroCanvas, ProductWindow } from '../components/HeroCanvas';
 import MetricStrip from '../components/MetricStrip';
@@ -199,7 +199,6 @@ const Home = () => {
   const nav = useNavigate();
   const [files, setFiles] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [apiKey, setApiKey] = useState('');
   const [q, setQ] = useState('');
   const [searching, setSearching] = useState(false);
   const [results, setResults] = useState(null);
@@ -217,7 +216,6 @@ const Home = () => {
   useEffect(() => {
     if (user?.token) {
       load();
-      fetchApiKey(user).then(k => setApiKey(k || '')).catch(() => {});
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user]);
@@ -280,14 +278,9 @@ const Home = () => {
   /* ====== AI 搜索 ====== */
   const handleSearch = async () => {
     if (!q.trim()) { message.warning('请输入搜索内容'); return; }
-    if (!apiKey) {
-      message.info('请先在 Knowledge 页设置 API Key');
-      nav('/knowledge');
-      return;
-    }
     setSearching(true);
     try {
-      const data = await aiSearch(q, user, apiKey);
+      const data = await aiSearch(q, user);
       setResults(data.files || []);
     } catch (e) {
       if (e.tokenExpired) { message.error('登录已过期'); logout(); return; }

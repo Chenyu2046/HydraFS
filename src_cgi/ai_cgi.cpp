@@ -128,6 +128,8 @@ static char web_server_port[10] = {0};
 static char public_server_ip[30] = {0};
 static char public_server_port[10] = {0};
 static char faiss_lock_dir[512] = "/tmp/faiss_locks";
+/* DashScope API Key：从 cfg.json 读取（出厂可用，不再依赖每用户 user_info） */
+static char dashscope_api_key[256] = {0};
 
 static void read_cfg()
 {
@@ -164,10 +166,14 @@ static void read_cfg()
     get_cfg_value(CFG_PATH, "public_server", "ip", public_server_ip);
     get_cfg_value(CFG_PATH, "public_server", "port", public_server_port);
 
+    /* 读取出厂 DashScope key（cfg 优先；为空才退回 user_info 兼容旧数据） */
+    get_cfg_value(CFG_PATH, "dashscope", "api_key", dashscope_api_key);
+
     LOG(AI_LOG_MODULE, AI_LOG_PROC,
-        "config loaded: mysql=[%s], redis=[%s:%s], dim=%d, global_index=%s, user_index_dir=%s, public=%s:%s\n",
+        "config loaded: mysql=[%s], redis=[%s:%s], dim=%d, global_index=%s, user_index_dir=%s, public=%s:%s, key=%s\n",
         mysql_db, redis_ip, redis_port, embedding_dimension, faiss_index_path,
-        faiss_user_index_dir, public_server_ip, public_server_port);
+        faiss_user_index_dir, public_server_ip, public_server_port,
+        strlen(dashscope_api_key) > 0 ? "configured" : "EMPTY");
 }
 
 // 判断是否是图片类型
@@ -337,12 +343,16 @@ static int is_text_type(const char *type)
 }
 
 /**
- * 解析 API Key：仅接受请求体里的 api_key
+ * 解析 API Key：优先请求体 → 退回 cfg.json 中的全局 key
+ * （前端不再传 key，cfg 始终生效）
  */
 static const char *resolve_api_key(cJSON *apikey_item)
 {
     if (apikey_item && apikey_item->valuestring && strlen(apikey_item->valuestring) > 0) {
         return apikey_item->valuestring;
+    }
+    if (strlen(dashscope_api_key) > 0) {
+        return dashscope_api_key;
     }
     return NULL;
 }

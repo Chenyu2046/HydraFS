@@ -200,17 +200,29 @@ CREATE TABLE IF NOT EXISTS `wiki_page` (
   KEY `idx_user_status` (`user`, `status`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='用户文件级 Wiki 页面';
 
--- 显式双链关系表（用户私有）
+-- 显式 + 隐式双链关系表（用户私有）
+-- explicit: 来自文档内 [[link]]，dst_name 必填，dst_md5 可空
+-- implicit: 来自 worker 自动向量相似度，dst_md5 + score 必填，dst_name 为对方文件名兜底
 CREATE TABLE IF NOT EXISTS `wiki_link` (
   `id` bigint NOT NULL AUTO_INCREMENT,
   `user` varchar(32) NOT NULL,
   `src_md5` varchar(256) NOT NULL COMMENT '源文件 MD5',
-  `dst_name` varchar(255) NOT NULL COMMENT '目标概念名',
-  `link_type` varchar(32) NOT NULL DEFAULT 'explicit' COMMENT '链接类型：explicit',
+  `dst_md5` varchar(256) DEFAULT NULL COMMENT '目标文件 MD5（implicit 必填）',
+  `dst_name` varchar(255) DEFAULT NULL COMMENT '目标概念名 / 文件名兜底',
+  `link_type` varchar(32) NOT NULL DEFAULT 'explicit' COMMENT 'explicit / implicit',
+  `score` float DEFAULT NULL COMMENT 'implicit 边的相似度分数',
   `anchor_text` varchar(255) DEFAULT NULL COMMENT '锚文本',
   `created_at` datetime DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   UNIQUE KEY `uq_user_src_dst_type` (`user`, `src_md5`(191), `dst_name`, `link_type`),
+  UNIQUE KEY `uq_user_src_dstmd5_type` (`user`, `src_md5`(191), `dst_md5`(191), `link_type`),
   KEY `idx_user_dst` (`user`, `dst_name`),
+  KEY `idx_user_dst_md5` (`user`, `dst_md5`(191)),
   KEY `idx_user_src` (`user`, `src_md5`(191))
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Wiki 显式双链关系表';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Wiki 双链关系表（显式 + 自动隐式）';
+
+-- 存量数据库兼容：补充 implicit 双链所需字段
+CALL safe_add_column('wiki_link', 'dst_md5', 'varchar(256) DEFAULT NULL COMMENT ''目标文件 MD5''');
+CALL safe_add_column('wiki_link', 'score', 'float DEFAULT NULL COMMENT ''相似度分数''');
+-- 旧版 dst_name 为 NOT NULL；存量库需放松约束（忽略错误）
+ALTER TABLE `wiki_link` MODIFY COLUMN `dst_name` varchar(255) DEFAULT NULL;

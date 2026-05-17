@@ -15,12 +15,16 @@
 #define TASK_LOG_MODULE "cgi"
 #define TASK_LOG_PROC   "knowledge_task"
 
-/* 可解析的文件类型列表（文本类 + pdf） */
+/* 可解析的文件类型列表（文本类 + pdf + 图片）
+ * 图片走 Qwen-VL 路径，由 worker 调用多模态模型生成描述后再 embed
+ */
 static const char *PARSEABLE_TYPES[] = {
     "txt", "md", "csv", "json", "xml", "html", "htm", "log",
     "c", "cpp", "h", "hpp", "py", "js", "ts", "jsx", "tsx",
     "css", "java", "go", "rs", "rb", "php", "sh", "bat", "yaml", "yml",
     "pdf",
+    /* 图片：worker 使用 dashscope_describe_image */
+    "png", "jpg", "jpeg", "gif", "bmp", "webp",
     NULL
 };
 

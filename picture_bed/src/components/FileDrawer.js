@@ -7,7 +7,7 @@ import {
 import styled from '@emotion/styled';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { describeFileByMd5, fetchWiki, fetchApiKey } from '../services/ai';
+import { describeFileByMd5, fetchWiki } from '../services/ai';
 import { Pill } from './primitives';
 import { classifyFileType } from '../mock/graph';
 
@@ -108,9 +108,7 @@ const FileDrawer = ({ open, file, onClose, onShare, onCancelShare, onDelete, onD
   const handleGenerate = async () => {
     setGenerating(true);
     try {
-      const apiKey = await fetchApiKey(user);
-      if (!apiKey) { message.info('请先在 Knowledge 页设置 API Key'); nav('/knowledge'); return; }
-      await describeFileByMd5(file.md5, file.file_name || file.name, file.type, user, apiKey);
+      await describeFileByMd5(file.md5, file.file_name || file.name, file.type, user, null);
       message.success('AI 分析任务已提交');
     } catch (e) {
       message.error('提交失败：' + (e.message || ''));

@@ -2,100 +2,15 @@ import { API_CONFIG } from '../config';
 import SparkMD5 from 'spark-md5';
 
 const AI_ENDPOINT = `${API_CONFIG.BASE_URL}/api/ai`;
-const API_KEY_STORAGE_PREFIX = 'dashscope_api_key_';
-
-const getStorageKey = (user) => `${API_KEY_STORAGE_PREFIX}${user.username}`;
-
-const syncApiKeyToServer = async (key, user) => {
-  const response = await fetch(`${AI_ENDPOINT}?cmd=set_apikey`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      user: user.username,
-      token: user.token,
-      api_key: key || ''
-    })
-  });
-
-  const data = await response.json();
-  if (data.code === 4) {
-    const err = new Error('token expired');
-    err.tokenExpired = true;
-    throw err;
-  }
-  if (data.code !== 0) {
-    throw new Error(data.msg || '保存 API Key 失败');
-  }
-  return data;
-};
-
-const fetchApiKeyFromServer = async (user) => {
-  const response = await fetch(`${AI_ENDPOINT}?cmd=get_apikey`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      user: user.username,
-      token: user.token
-    })
-  });
-
-  const data = await response.json();
-  if (data.code === 4) {
-    const err = new Error('token expired');
-    err.tokenExpired = true;
-    throw err;
-  }
-  if (data.code !== 0) {
-    throw new Error(data.msg || '获取 API Key 失败');
-  }
-  return data.data?.api_key || '';
-};
-
-const resolveApiKey = async (user, explicitKey) => {
-  if (explicitKey && explicitKey.trim()) {
-    return explicitKey.trim();
-  }
-  return fetchApiKey(user);
-};
 
 /**
- * 优先从服务端读取 API Key；若服务端为空，则回退本地缓存并尝试回写服务端
+ * AI 服务前端 SDK
+ *
+ * 说明：API Key 已迁移到后端 cfg.json，前端不再保存/同步任何 key。
+ * 所有 AI 请求由后端按用户 token 鉴权后用全局 key 执行。
  */
-export const fetchApiKey = async (user) => {
-  if (!user || !user.username) return '';
-  const storageKey = getStorageKey(user);
-  const localKey = localStorage.getItem(storageKey) || '';
 
-  const serverKey = await fetchApiKeyFromServer(user);
-  if (serverKey) {
-    localStorage.setItem(storageKey, serverKey);
-    return serverKey;
-  }
-  if (!localKey) return '';
-
-  await syncApiKeyToServer(localKey, user);
-  localStorage.setItem(storageKey, localKey);
-  return localKey;
-};
-
-/**
- * 保存 API Key 到服务端，并同步浏览器本地缓存
- */
-export const saveApiKey = async (key, user) => {
-  if (!user || !user.username) {
-    throw new Error('用户信息无效');
-  }
-  const storageKey = getStorageKey(user);
-  await syncApiKeyToServer(key, user);
-  if (key) {
-    localStorage.setItem(storageKey, key);
-  } else {
-    localStorage.removeItem(storageKey);
-  }
-  return { code: 0, msg: 'ok' };
-};
-
-// 计算文件 MD5（与 images.js 中一致）
+// 计算文件 MD5（保留给可能的本地秒传场景）
 const calculateMD5 = (file) => {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -109,38 +24,39 @@ const calculateMD5 = (file) => {
   });
 };
 
+const postJson = async (cmd, body, { silentTokenError = false } = {}) => {
+  const response = await fetch(`${AI_ENDPOINT}?cmd=${cmd}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const data = await response.json();
+  if (data.code === 4) {
+    const err = new Error('token expired');
+    err.tokenExpired = true;
+    if (!silentTokenError) throw err;
+    return null;
+  }
+  if (data.code !== 0) {
+    throw new Error(data.msg || `${cmd} 失败`);
+  }
+  return data;
+};
+
 /**
- * 上传后异步调用 AI 生成文件描述 + 向量
- * 失败不影响上传流程
+ * 上传后异步触发 AI 描述（后端 worker 也会自动入队，此处可作冗余触发；失败不影响主流程）
  */
-export const describeFile = async (file, user, apiKey) => {
+export const describeFile = async (file, user) => {
   try {
     const md5 = await calculateMD5(file);
-    const ext = file.name.split('.').pop() || '';
-    const resolvedApiKey = await resolveApiKey(user, apiKey);
-
-    const body = {
+    const ext = (file.name.split('.').pop() || '').toLowerCase();
+    return await postJson('describe', {
       user: user.username,
       token: user.token,
-      md5: md5,
+      md5,
       filename: file.name,
-      type: ext.toLowerCase()
-    };
-    if (resolvedApiKey) body.api_key = resolvedApiKey;
-
-    const response = await fetch(`${AI_ENDPOINT}?cmd=describe`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
+      type: ext,
     });
-
-    const data = await response.json();
-    if (data.code === 0) {
-      console.log('AI describe success:', file.name);
-    } else {
-      console.warn('AI describe failed:', data.msg);
-    }
-    return data;
   } catch (error) {
     console.warn('AI describe error (non-blocking):', error);
     return null;
@@ -150,66 +66,30 @@ export const describeFile = async (file, user, apiKey) => {
 /**
  * 对已有文件重新生成 AI 描述（通过 md5）
  */
-export const describeFileByMd5 = async (md5, filename, type, user, apiKey, skipRebuild = false) => {
-  const resolvedApiKey = await resolveApiKey(user, apiKey);
+export const describeFileByMd5 = async (md5, filename, type, user, _unused, skipRebuild = false) => {
   const body = {
     user: user.username,
     token: user.token,
-    md5: md5,
-    filename: filename,
-    type: type,
-    force: true
+    md5,
+    filename,
+    type,
+    force: true,
   };
   if (skipRebuild) body.skip_rebuild = true;
-  if (resolvedApiKey) body.api_key = resolvedApiKey;
-
-  const response = await fetch(`${AI_ENDPOINT}?cmd=describe`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
-  });
-
-  const data = await response.json();
-  if (data.code === 4) {
-    const err = new Error('token expired');
-    err.tokenExpired = true;
-    throw err;
-  }
-  if (data.code !== 0) {
-    throw new Error(data.msg || '生成描述失败');
-  }
-  return data;
+  return postJson('describe', body);
 };
 
 /**
  * AI 语义搜索
  */
-export const aiSearch = async (query, user, apiKey) => {
-  const resolvedApiKey = await resolveApiKey(user, apiKey);
-  const body = {
+export const aiSearch = async (query, user) => {
+  const data = await postJson('search', {
     user: user.username,
     token: user.token,
-    query: query
-  };
-  if (resolvedApiKey) body.api_key = resolvedApiKey;
-
-  const response = await fetch(`${AI_ENDPOINT}?cmd=search`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
+    query,
   });
-
-  const data = await response.json();
-  if (data.code === 4) {
-    const err = new Error('token expired');
-    err.tokenExpired = true;
-    throw err;
-  }
-  if (data.code !== 0) {
-    throw new Error(data.msg || '搜索失败');
-  }
   if (data.files) {
-    data.files = data.files.map(f => ({
+    data.files = data.files.map((f) => ({
       ...f,
       url: f.url ? f.url.replace(API_CONFIG.STORAGE_URL, API_CONFIG.BASE_URL) : '',
     }));
@@ -220,79 +100,29 @@ export const aiSearch = async (query, user, apiKey) => {
 /**
  * 重建 FAISS 索引
  */
-export const rebuildIndex = async (user) => {
-  const response = await fetch(`${AI_ENDPOINT}?cmd=rebuild`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      user: user.username,
-      token: user.token
-    })
-  });
+export const rebuildIndex = async (user) =>
+  postJson('rebuild', { user: user.username, token: user.token });
 
-  const data = await response.json();
-  if (data.code !== 0) {
-    throw new Error(data.msg || '重建索引失败');
-  }
-  return data;
-};
-
-/**
- * 获取文件知识卡片
- */
+/** 获取文件知识卡片 */
 export const fetchFileCard = async (md5, user) => {
-  const response = await fetch(`${AI_ENDPOINT}?cmd=file_card`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ user: user.username, token: user.token, md5 })
-  });
-  const data = await response.json();
-  if (data.code === 4) { const err = new Error('token expired'); err.tokenExpired = true; throw err; }
-  if (data.code !== 0) throw new Error(data.msg || '获取文件卡片失败');
-  return data.data;
+  const d = await postJson('file_card', { user: user.username, token: user.token, md5 });
+  return d.data;
 };
 
-/**
- * 获取文件 Wiki 页面
- */
+/** 获取文件 Wiki 页面 */
 export const fetchWiki = async (md5, user) => {
-  const response = await fetch(`${AI_ENDPOINT}?cmd=wiki`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ user: user.username, token: user.token, md5 })
-  });
-  const data = await response.json();
-  if (data.code === 4) { const err = new Error('token expired'); err.tokenExpired = true; throw err; }
-  if (data.code !== 0) throw new Error(data.msg || '获取 Wiki 失败');
-  return data.data;
+  const d = await postJson('wiki', { user: user.username, token: user.token, md5 });
+  return d.data;
 };
 
-/**
- * 获取反向链接
- */
+/** 获取反向链接（含显式 + 隐式自动链接） */
 export const fetchBacklinks = async (md5, user) => {
-  const response = await fetch(`${AI_ENDPOINT}?cmd=backlinks`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ user: user.username, token: user.token, md5 })
-  });
-  const data = await response.json();
-  if (data.code === 4) { const err = new Error('token expired'); err.tokenExpired = true; throw err; }
-  if (data.code !== 0) throw new Error(data.msg || '获取反向链接失败');
-  return data.data;
+  const d = await postJson('backlinks', { user: user.username, token: user.token, md5 });
+  return d.data;
 };
 
-/**
- * 获取相关文件推荐
- */
+/** 获取相关文件推荐 */
 export const fetchRelated = async (md5, user) => {
-  const response = await fetch(`${AI_ENDPOINT}?cmd=related`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ user: user.username, token: user.token, md5 })
-  });
-  const data = await response.json();
-  if (data.code === 4) { const err = new Error('token expired'); err.tokenExpired = true; throw err; }
-  if (data.code !== 0) throw new Error(data.msg || '获取相关文件失败');
-  return data.data;
+  const d = await postJson('related', { user: user.username, token: user.token, md5 });
+  return d.data;
 };

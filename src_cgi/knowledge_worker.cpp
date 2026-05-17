@@ -47,13 +47,17 @@ static char mysql_user[128] = {0};
 static char mysql_pwd[128] = {0};
 static char mysql_db[128] = {0};
 static char embedding_model[64] = {0};
+static char vl_model[64] = {0};
 static int  embedding_dimension = 1024;
 static char web_server_ip[30] = {0};
 static char web_server_port[10] = {0};
 static char faiss_user_index_dir[512] = {0};
 static char faiss_lock_dir[512] = "/tmp/faiss_locks";
-/* DashScope API Key：从 user_info 读取每用户的 key */
+/* DashScope API Key：cfg.json 优先（出厂可用） */
 static char dashscope_api_key[256] = {0};
+/* 自动双链阈值 */
+static int   auto_link_topk = 5;
+static float auto_link_threshold = 0.55f;
 
 static int g_running = 1;
 
@@ -72,6 +76,8 @@ static void read_cfg()
     get_cfg_value(CFG_PATH, "mysql", "password", mysql_pwd);
     get_cfg_value(CFG_PATH, "mysql", "database", mysql_db);
     get_cfg_value(CFG_PATH, "dashscope", "embedding_model", embedding_model);
+    get_cfg_value(CFG_PATH, "dashscope", "vl_model", vl_model);
+    if (strlen(vl_model) == 0) strncpy(vl_model, "qwen-vl-plus", sizeof(vl_model) - 1);
     char dim_str[16] = {0};
     get_cfg_value(CFG_PATH, "dashscope", "embedding_dimension", dim_str);
     if (strlen(dim_str) > 0) embedding_dimension = atoi(dim_str);
@@ -79,9 +85,19 @@ static void read_cfg()
     get_cfg_value(CFG_PATH, "web_server", "ip", web_server_ip);
     get_cfg_value(CFG_PATH, "web_server", "port", web_server_port);
     get_cfg_value(CFG_PATH, "dashscope", "api_key", dashscope_api_key);
+
+    /* 自动双链阈值（可选） */
+    char tk[16] = {0}, th[16] = {0};
+    get_cfg_value(CFG_PATH, "dashscope", "auto_link_topk", tk);
+    get_cfg_value(CFG_PATH, "dashscope", "auto_link_threshold", th);
+    if (strlen(tk) > 0) auto_link_topk = atoi(tk);
+    if (strlen(th) > 0) auto_link_threshold = (float)atof(th);
+
     LOG(UTIL_LOG_MODULE, UTIL_LOG_PROC,
-        "config loaded: mysql=%s, dim=%d, web=%s:%s\n",
-        mysql_db, embedding_dimension, web_server_ip, web_server_port);
+        "config loaded: mysql=%s, dim=%d, web=%s:%s, vl=%s, key=%s, topk=%d, th=%.2f\n",
+        mysql_db, embedding_dimension, web_server_ip, web_server_port,
+        vl_model, strlen(dashscope_api_key) > 0 ? "configured" : "EMPTY",
+        auto_link_topk, auto_link_threshold);
 }
 
 /* ---- 工具函数 ---- */
@@ -189,6 +205,16 @@ static int is_text_type(const char *type)
     };
     for (int i = 0; text_types[i]; i++)
         if (strcasecmp(type, text_types[i]) == 0) return 1;
+    return 0;
+}
+
+/* 判断是否为图片（走 Qwen-VL 多模态） */
+static int is_image_type(const char *type)
+{
+    if (!type) return 0;
+    const char *imgs[] = {"png","jpg","jpeg","gif","bmp","webp", NULL};
+    for (int i = 0; imgs[i]; i++)
+        if (strcasecmp(type, imgs[i]) == 0) return 1;
     return 0;
 }
 
@@ -568,6 +594,155 @@ static int update_user_parse_state(MYSQL *conn, const char *user, const char *md
     return ret;
 }
 
+/* === 自动隐式双链：基于向量余弦相似度，连接同用户其他文件 ===
+ *
+ * 流程：
+ *   1. 查询同 user 下 parse_status='success' 且 md5 != self 的所有 (md5, file_name, embedding)
+ *   2. 已 L2 normalize → 余弦相似度 = 点积
+ *   3. 排序取 top-K，过滤 score >= threshold
+ *   4. INSERT/UPSERT wiki_link：双向写两条，link_type='implicit'
+ *
+ * 这是 Obsidian 风格"上传自动连接"的真双链核心。
+ */
+static int auto_build_implicit_links(MYSQL *conn, const char *user,
+                                     const char *self_md5, const float *self_vec)
+{
+    if (!conn || !user || !self_md5 || !self_vec) return -1;
+    if (auto_link_topk <= 0) return 0;
+
+    char *eu0 = escape_mysql(conn, user);
+    char *es0 = escape_mysql(conn, self_md5);
+    if (!eu0 || !es0) { if (eu0) free(eu0); if (es0) free(es0); return -1; }
+
+    char sql[2048] = {0};
+    snprintf(sql, sizeof(sql),
+             "SELECT u.md5, u.embedding, COALESCE(l.file_name, u.md5) "
+             "FROM user_file_ai_desc u "
+             "LEFT JOIN user_file_list l ON l.user=u.user AND l.md5=u.md5 "
+             "WHERE u.user='%s' AND u.parse_status='success' AND u.md5 <> '%s' "
+             "AND u.embedding IS NOT NULL",
+             eu0, es0);
+    free(eu0); free(es0);
+
+    if (mysql_query(conn, sql) != 0) {
+        LOG(UTIL_LOG_MODULE, UTIL_LOG_PROC,
+            "auto_link query failed: %s\n", mysql_error(conn));
+        return -1;
+    }
+    MYSQL_RES *res = mysql_store_result(conn);
+    if (!res) return -1;
+
+    typedef struct { char md5[260]; char name[260]; float score; } Candidate;
+    int cap = 64, cnt = 0;
+    Candidate *cands = (Candidate *)malloc(sizeof(Candidate) * cap);
+    if (!cands) { mysql_free_result(res); return -1; }
+
+    int blob_len = embedding_dimension * (int)sizeof(float);
+    MYSQL_ROW row;
+    while ((row = mysql_fetch_row(res))) {
+        unsigned long *lens = mysql_fetch_lengths(res);
+        if (!row[0] || !row[1] || (int)lens[1] != blob_len) continue;
+        const float *vec = (const float *)row[1];
+
+        float dot = 0.0f;
+        for (int i = 0; i < embedding_dimension; i++) dot += self_vec[i] * vec[i];
+        if (dot < auto_link_threshold) continue;
+
+        if (cnt >= cap) {
+            cap *= 2;
+            Candidate *p = (Candidate *)realloc(cands, sizeof(Candidate) * cap);
+            if (!p) break;
+            cands = p;
+        }
+        strncpy(cands[cnt].md5, row[0], sizeof(cands[cnt].md5) - 1);
+        cands[cnt].md5[sizeof(cands[cnt].md5) - 1] = '\0';
+        cands[cnt].name[0] = '\0';
+        if (row[2]) {
+            strncpy(cands[cnt].name, row[2], sizeof(cands[cnt].name) - 1);
+            cands[cnt].name[sizeof(cands[cnt].name) - 1] = '\0';
+        }
+        cands[cnt].score = dot;
+        cnt++;
+    }
+    mysql_free_result(res);
+
+    if (cnt == 0) {
+        free(cands);
+        LOG(UTIL_LOG_MODULE, UTIL_LOG_PROC,
+            "auto_link[%.32s]: no similar files (th=%.2f)\n",
+            self_md5, auto_link_threshold);
+        return 0;
+    }
+
+    /* 选 top-K（选择排序，K<=10，n 数百级别足够） */
+    int k = cnt < auto_link_topk ? cnt : auto_link_topk;
+    for (int i = 0; i < k; i++) {
+        int max_idx = i;
+        for (int j = i + 1; j < cnt; j++)
+            if (cands[j].score > cands[max_idx].score) max_idx = j;
+        if (max_idx != i) {
+            Candidate tmp = cands[i]; cands[i] = cands[max_idx]; cands[max_idx] = tmp;
+        }
+    }
+
+    /* 清掉本文件作为 src 的旧 implicit 边 */
+    {
+        char *eu = escape_mysql(conn, user);
+        char *es = escape_mysql(conn, self_md5);
+        if (eu && es) {
+            char delsql[512];
+            snprintf(delsql, sizeof(delsql),
+                "DELETE FROM wiki_link WHERE user='%s' AND src_md5='%s' AND link_type='implicit'",
+                eu, es);
+            mysql_query(conn, delsql);
+        }
+        if (eu) free(eu);
+        if (es) free(es);
+    }
+
+    int written = 0;
+    for (int i = 0; i < k; i++) {
+        char *eu = escape_mysql(conn, user);
+        char *es = escape_mysql(conn, self_md5);
+        char *ed = escape_mysql(conn, cands[i].md5);
+        char *en = escape_mysql(conn, cands[i].name[0] ? cands[i].name : cands[i].md5);
+        if (!eu || !es || !ed || !en) {
+            if (eu) free(eu); if (es) free(es);
+            if (ed) free(ed); if (en) free(en);
+            continue;
+        }
+
+        char ins[1024];
+        /* A→B */
+        snprintf(ins, sizeof(ins),
+            "INSERT INTO wiki_link (user, src_md5, dst_md5, dst_name, link_type, score) "
+            "VALUES ('%s','%s','%s','%s','implicit',%.4f) "
+            "ON DUPLICATE KEY UPDATE score=VALUES(score), dst_name=VALUES(dst_name)",
+            eu, es, ed, en, cands[i].score);
+        if (mysql_query(conn, ins) == 0) written++;
+
+        /* B→A 反向 */
+        snprintf(ins, sizeof(ins),
+            "INSERT INTO wiki_link (user, src_md5, dst_md5, dst_name, link_type, score) "
+            "VALUES ('%s','%s','%s','%s','implicit',%.4f) "
+            "ON DUPLICATE KEY UPDATE score=VALUES(score)",
+            eu, ed, es, es, cands[i].score);
+        mysql_query(conn, ins);
+
+        LOG(UTIL_LOG_MODULE, UTIL_LOG_PROC,
+            "auto_link[%.32s] -> %.32s (%.3f)\n",
+            self_md5, cands[i].md5, cands[i].score);
+
+        free(eu); free(es); free(ed); free(en);
+    }
+
+    free(cands);
+    LOG(UTIL_LOG_MODULE, UTIL_LOG_PROC,
+        "auto_link[%.32s]: wrote %d implicit edges (top%d, th=%.2f)\n",
+        self_md5, written, k, auto_link_threshold);
+    return written;
+}
+
 static void cleanup_wiki_artifacts(MYSQL *conn, const char *user, const char *md5)
 {
     char *esc_user = escape_mysql(conn, user);
@@ -672,16 +847,45 @@ static int process_one_task(MYSQL *conn, long task_id, const char *user,
         }
     }
 
-    /* 2. 下载文件 */
-    snprintf(file_path, sizeof(file_path), "/tmp/knowledge_%ld_%s", task_id, md5);
-    if (download_file(download_url, file_path) != 0) {
-        LOG(UTIL_LOG_MODULE, UTIL_LOG_PROC, "download failed: %s\n", download_url);
-        handle_task_failure(conn, task_id, retry_count, "download failed");
-        return -1;
+    /* 2. 下载文件（图片不下载，直接用 URL 走 VL） */
+    int is_image = is_image_type(type);
+    if (!is_image) {
+        snprintf(file_path, sizeof(file_path), "/tmp/knowledge_%ld_%s", task_id, md5);
+        if (download_file(download_url, file_path) != 0) {
+            LOG(UTIL_LOG_MODULE, UTIL_LOG_PROC, "download failed: %s\n", download_url);
+            handle_task_failure(conn, task_id, retry_count, "download failed");
+            return -1;
+        }
     }
 
-    /* 3. 提取文本 */
-    if (strcasecmp(type, "pdf") == 0) {
+    /* 3. 获取/生成文本描述 */
+    char api_key_early[256] = {0};
+    if (strlen(dashscope_api_key) > 0) {
+        strncpy(api_key_early, dashscope_api_key, sizeof(api_key_early) - 1);
+    } else {
+        /* 兼容旧数据：从 user_info 取 */
+        load_user_api_key(conn, user, api_key_early, sizeof(api_key_early));
+    }
+
+    if (is_image) {
+        /* 调用 Qwen-VL 多模态 */
+        char vl_desc[2048] = {0};
+        if (strlen(api_key_early) == 0) {
+            LOG(UTIL_LOG_MODULE, UTIL_LOG_PROC, "no api key for VL, task %ld\n", task_id);
+            handle_task_failure(conn, task_id, retry_count, "no api key for VL");
+            return -1;
+        }
+        if (dashscope_describe_image(api_key_early, download_url,
+                                     vl_desc, sizeof(vl_desc)) != 0) {
+            LOG(UTIL_LOG_MODULE, UTIL_LOG_PROC, "VL describe failed: %s\n", download_url);
+            handle_task_failure(conn, task_id, retry_count, "VL describe failed");
+            return -1;
+        }
+        snprintf(text_content, sizeof(text_content), "%s", vl_desc);
+        text_len = (int)strlen(text_content);
+        LOG(UTIL_LOG_MODULE, UTIL_LOG_PROC,
+            "image VL desc[%ld]: %.120s\n", task_id, vl_desc);
+    } else if (strcasecmp(type, "pdf") == 0) {
         text_len = extract_pdf_text(file_path, text_content, sizeof(text_content) - 1);
     } else if (is_text_type(type)) {
         text_len = read_text_file(file_path, text_content, sizeof(text_content) - 1);
@@ -689,12 +893,12 @@ static int process_one_task(MYSQL *conn, long task_id, const char *user,
 
     if (text_len <= 0) {
         LOG(UTIL_LOG_MODULE, UTIL_LOG_PROC, "text extraction failed for type=%s\n", type);
-        remove(file_path);
+        if (!is_image) remove(file_path);
         /* 非致命：仍尝试用文件名作为描述 */
         snprintf(text_content, sizeof(text_content), "%s file", type);
         text_len = strlen(text_content);
     }
-    remove(file_path);
+    if (!is_image) remove(file_path);
 
     /* 4. 生成描述 */
     {
@@ -724,11 +928,8 @@ static int process_one_task(MYSQL *conn, long task_id, const char *user,
     LOG(UTIL_LOG_MODULE, UTIL_LOG_PROC,
         "summary=%.100s, tags=%s, outline=%s\n", summary, tags_json, outline_json);
 
-    /* 7. 获取 API Key */
-    if (load_user_api_key(conn, user, api_key, sizeof(api_key)) != 0 &&
-        strlen(dashscope_api_key) > 0) {
-        strncpy(api_key, dashscope_api_key, sizeof(api_key) - 1);
-    }
+    /* 7. 获取 API Key（cfg 优先，已在第 3 步加载） */
+    strncpy(api_key, api_key_early, sizeof(api_key) - 1);
 
     /* 8. 生成 embedding */
     const char *embedding_error = NULL;
@@ -815,12 +1016,21 @@ static int process_one_task(MYSQL *conn, long task_id, const char *user,
         LOG(UTIL_LOG_MODULE, UTIL_LOG_PROC, "write_wiki_page failed\n");
     }
 
-    /* 10. 写 wiki_link */
+    /* 10. 写 wiki_link（显式 [[link]]） */
     if (strcmp(final_parse_status, "success") == 0 &&
         write_wiki_links(conn, user, md5, tags_json) != 0) {
         final_parse_status = "failed";
         final_error_msg = "write wiki links failed";
         LOG(UTIL_LOG_MODULE, UTIL_LOG_PROC, "write_wiki_links failed\n");
+    }
+
+    /* 10.5 自动隐式双链：上传即建立 Obsidian 风格的反向连接 */
+    if (strcmp(final_parse_status, "success") == 0 && vec != NULL) {
+        int n = auto_build_implicit_links(conn, user, md5, vec);
+        if (n < 0) {
+            LOG(UTIL_LOG_MODULE, UTIL_LOG_PROC,
+                "auto_build_implicit_links returned error, ignore\n");
+        }
     }
 
     if (vec) {
