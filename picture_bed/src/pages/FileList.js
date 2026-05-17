@@ -163,22 +163,7 @@ const FileList = () => {
 
       <QuickUpload onDone={load} />
 
-      <SectionTitle>
-        <h2>All Files</h2>
-        <span>支持搜索 / 类型筛选 / 网格与表格双视图</span>
-        <span className="right">
-          <Segmented
-            options={[
-              { value: 'grid', icon: <AppstoreOutlined />, label: 'Grid' },
-              { value: 'list', icon: <UnorderedListOutlined />, label: 'List' },
-            ]}
-            value={view}
-            onChange={setView}
-            size="small"
-          />
-          <Tooltip title="刷新"><Button size="small" icon={<ReloadOutlined />} onClick={load} /></Tooltip>
-        </span>
-      </SectionTitle>
+      <SectionTitle><h2>All Files</h2><span>支持搜索 / 类型筛选 / 网格与表格双视图</span></SectionTitle>
 
       <Toolbar>
         <Input
@@ -194,6 +179,16 @@ const FileList = () => {
           value={filter}
           onChange={setFilter}
         />
+        <span style={{ flex: 1 }} />
+        <Segmented
+          options={[
+            { value: 'grid', icon: <AppstoreOutlined />, label: 'Grid' },
+            { value: 'list', icon: <UnorderedListOutlined />, label: 'List' },
+          ]}
+          value={view}
+          onChange={setView}
+        />
+        <Tooltip title="刷新"><Button icon={<ReloadOutlined />} onClick={load} /></Tooltip>
       </Toolbar>
 
       {loading && files.length === 0 ? (

@@ -93,8 +93,7 @@ const Topbar = ({ crumbs = [], transparent = false }) => {
     <Bar $transparent={transparent}>
       <Crumbs style={transparent ? { visibility: 'hidden' } : undefined}>
         <Brand>HydraFS</Brand>
-        {/* 单段面包屑（如 ['Files']）与 Sidebar 选中态重复，跳过以避免噪音；仅在 >=2 段时展示导航深度 */}
-        {crumbs.length >= 2 && crumbs.map((c, i) => (
+        {crumbs.map((c, i) => (
           <React.Fragment key={i}>
             <Sep>/</Sep>
             <span style={{ color: i === crumbs.length - 1 ? undefined : 'inherit' }}>{c}</span>

@@ -2,25 +2,6 @@
  * HydraFS Design Tokens
  * 单一来源：颜色 / 间距 / 字号 / 圆角 / 阴影 / 动效 / 字体
  * 不要在组件里写死颜色，所有颜色走 useTheme().colors
- *
- * ─────────────────────────────────────────────────────────────
- * 全局设计原则（前端必须遵守，违反则在 CR 中拒绝合入）：
- *
- * 1. 导航单一源
- *    位置心智只由 Sidebar 承载；Topbar 仅在路径 ≥2 段时显示面包屑深度。
- *    内容页禁止再造 Tabs / NavLink 作为页面级导航 —— 用 Segmented / 锚点 / 路由替代。
- *
- * 2. 用户语言优先
- *    Home / Bento / Trust footer 等"对外文案"只描述用户能直接得到的价值；
- *    技术栈名称（FastDFS / MySQL / Redis / DashScope / FAISS / Embedding 等）
- *    只允许出现在 Knowledge 设置页与开发者文档中。
- *
- * 3. 只展示已上线的能力
- *    Hero / Bento 的 mock 必须与已合入的后端能力一一对应；
- *    展示"PPT 级功能"被视为反 pattern。
- *
- * 4. 字号使用 token，不要在组件里写 clamp(…vw…) 或随手的 magic number。
- * ─────────────────────────────────────────────────────────────
  */
 
 const space = {
@@ -35,9 +16,6 @@ const radius = {
 const fontSize = {
   micro: '11px', caption: '12px', body: '13px', bodyLg: '14px',
   h4: '15px', h3: '17px', h2: '20px', h1: '26px', display: '36px',
-  // hero：Home 首屏大标题专用。固定字号（不用 clamp）以保证跨设备心智一致；
-  // 移动端如需缩放，在组件里通过 @media 单独覆盖。
-  hero: '44px',
 };
 
 const fontWeight = { regular: 400, medium: 500, semibold: 600, bold: 700 };

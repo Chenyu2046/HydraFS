@@ -73,7 +73,6 @@ const QuickUpload = ({ onDone }) => {
       if (result.alreadyExists) message.warning('文件已存在');
       else if (result.instant) message.success('秒传成功');
       else message.success('上传成功');
-      // 触发后台 AI 分析；若 API Key 失效会通过 services/ai.js 全局弹窗提示
       describeFile(file, user).catch(() => {});
       onDone && onDone();
     } catch (e) {

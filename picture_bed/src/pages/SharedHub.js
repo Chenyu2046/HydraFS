@@ -1,9 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import styled from '@emotion/styled';
-import { Segmented, Table, Button, Tooltip, message, Skeleton, Empty, Tag, Modal, Input } from 'antd';
+import { Tabs, Table, Button, Tooltip, message, Skeleton, Empty, Tag, Modal, Input } from 'antd';
 import {
   DownloadOutlined, SaveOutlined, FileOutlined, FilePdfOutlined, FileWordOutlined,
-  FileExcelOutlined, FileZipOutlined, FileTextOutlined, SearchOutlined,
+  FileExcelOutlined, FileZipOutlined, FileTextOutlined, EyeOutlined, SearchOutlined,
   TrophyOutlined, TeamOutlined,
 } from '@ant-design/icons';
 import { useLocation, useNavigate } from 'react-router-dom';
@@ -12,15 +12,14 @@ import { fetchSharedFiles, fetchSharedFilesRanking, saveSharedFile, pvSharedFile
 import { Panel, PanelHeader, PanelBody, SectionTitle } from '../components/primitives';
 
 const PageHead = styled.div`
-  display: flex; align-items: flex-end; justify-content: space-between; gap: 16px;
   margin-bottom: 18px;
-  .meta h1 {
+  h1 {
     margin: 0 0 4px;
     font-size: 24px; font-weight: 700;
     letter-spacing: -0.4px;
     color: ${p => p.theme.colors.text};
   }
-  .meta p { margin: 0; font-size: 13px; color: ${p => p.theme.colors.text2}; }
+  p { margin: 0; font-size: 13px; color: ${p => p.theme.colors.text2}; }
 `;
 
 const Toolbar = styled.div`
@@ -88,12 +87,8 @@ const SharedHub = () => {
   const { user } = useAuth();
   const loc = useLocation();
   const nav = useNavigate();
-  const initial = useMemo(() => {
-    const sp = new URLSearchParams(loc.search);
-    // 兼容旧 ?tab=top 链接
-    return sp.get('sort') || sp.get('tab') || 'browse';
-  }, [loc.search]);
-  const [sort, setSort] = useState(initial);
+  const initial = useMemo(() => new URLSearchParams(loc.search).get('tab') || 'browse', [loc.search]);
+  const [tab, setTab] = useState(initial);
   const [allFiles, setAllFiles] = useState([]);
   const [topFiles, setTopFiles] = useState([]);
   const [keyword, setKeyword] = useState('');
@@ -172,25 +167,20 @@ const SharedHub = () => {
   return (
     <div>
       <PageHead>
-        <div className="meta">
-          <h1>Shared</h1>
-          <p>来自其他用户的公开文件 · 共 {allFiles.length} 个</p>
-        </div>
-        {/* 浏览 / 下载榜 用 Segmented 作为"排序/视角"开关，避免在内容页再造一层 Tab 导航 */}
-        <Segmented
-          value={sort}
-          onChange={(v) => {
-            setSort(v);
-            nav('/shared' + (v === 'browse' ? '' : '?sort=' + v), { replace: true });
-          }}
-          options={[
-            { value: 'browse', label: <span><TeamOutlined /> 浏览</span> },
-            { value: 'top',    label: <span><TrophyOutlined /> 下载榜</span> },
-          ]}
-        />
+        <h1>Shared</h1>
+        <p>来自其他用户的公开文件 · 共 {allFiles.length} 个</p>
       </PageHead>
 
-      {sort === 'browse' && (
+      <Tabs
+        activeKey={tab}
+        onChange={(k) => { setTab(k); nav('/shared' + (k === 'browse' ? '' : '?tab=' + k), { replace: true }); }}
+        items={[
+          { key: 'browse', label: <span><TeamOutlined /> 浏览</span> },
+          { key: 'top',    label: <span><TrophyOutlined /> 下载榜</span> },
+        ]}
+      />
+
+      {tab === 'browse' && (
         <>
           <Toolbar>
             <Input
@@ -248,7 +238,7 @@ const SharedHub = () => {
         </>
       )}
 
-      {sort === 'top' && (
+      {tab === 'top' && (
         <Panel style={{ overflow: 'hidden', marginTop: 4 }}>
           <PanelHeader>
             <h3>Top Downloads</h3>

@@ -1,18 +1,21 @@
 import React from 'react';
 import styled from '@emotion/styled';
+import { NavLink } from 'react-router-dom';
 
 /**
  * HeroCanvas
- * Base44 风格的 pastel gradient 大画布（仅用于 Overview 首页）
+ * Base44 / jellistudio 风格的 pastel gradient 大画布
  * - 圆角 28px、占满内容区
- * - 不再内嵌 nav；导航统一走 Sidebar（设计原则：单一导航源）
+ * - 顶部内置 floating pill nav
  * - 子组件分两栏（左 hero 文案 / 右 mockup）
+ *
+ * 视觉 only。所有跳转用 NavLink 走真实路由。
  */
 
 const Canvas = styled.section`
   position: relative;
   margin: 16px 16px 0;
-  padding: 56px 56px 56px;
+  padding: 80px 56px 56px;
   border-radius: 28px;
   overflow: hidden;
   background: ${p => p.theme.colors.canvasBase};
@@ -48,6 +51,66 @@ const Canvas = styled.section`
     padding: 64px 24px 36px;
     margin: 12px 12px 0;
     border-radius: 22px;
+  }
+`;
+
+/* ===== Floating pill nav（装饰 + 真实跳转） ===== */
+const PillNav = styled.nav`
+  position: absolute;
+  top: 18px; left: 50%;
+  transform: translateX(-50%);
+  display: flex; align-items: center; gap: 4px;
+  padding: 6px;
+  border-radius: 999px;
+  background: ${p => p.theme.colors.chromeBg};
+  border: 1px solid ${p => p.theme.colors.chromeBorder};
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  box-shadow: ${p => p.theme.shadow.md};
+  z-index: 5;
+
+  .brand {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 6px 14px 6px 8px;
+    color: ${p => p.theme.colors.text};
+    font-weight: 700;
+    font-size: 13px;
+    letter-spacing: -0.2px;
+    text-decoration: none;
+    .dot {
+      width: 22px; height: 22px;
+      border-radius: 7px;
+      background: linear-gradient(135deg, ${p => p.theme.colors.accent}, ${p => p.theme.colors.accentHover});
+      display: grid; place-items: center;
+      color: #fff; font-size: 11px; font-weight: 800;
+    }
+  }
+
+  a.link {
+    padding: 7px 14px;
+    border-radius: 999px;
+    color: ${p => p.theme.colors.text2};
+    font-size: 13px;
+    text-decoration: none;
+    transition: all 160ms ease;
+    &:hover { color: ${p => p.theme.colors.text}; background: ${p => p.theme.colors.panelHover}; }
+    &.active { color: ${p => p.theme.colors.text}; background: ${p => p.theme.colors.panel2}; }
+  }
+
+  .cta {
+    margin-left: 6px;
+    padding: 7px 16px;
+    border-radius: 999px;
+    background: ${p => p.theme.colors.text};
+    color: ${p => p.theme.colors.bg};
+    font-size: 13px; font-weight: 600;
+    text-decoration: none;
+    transition: opacity 160ms ease;
+    &:hover { opacity: 0.85; }
+  }
+
+  @media (max-width: 880px) {
+    .link { display: none; }
   }
 `;
 
@@ -123,8 +186,28 @@ const Window = styled.div`
   }
 `;
 
+const NAV_ITEMS = [
+  { to: '/files',     label: 'Storage' },
+  { to: '/knowledge', label: 'AI Insight' },
+  { to: '/graph',     label: 'Knowledge Graph' },
+  { to: '/shared',    label: 'Shared' },
+];
+
 export const HeroCanvas = ({ children }) => (
   <Canvas>
+    <PillNav>
+      <NavLink to="/" className="brand">
+        <span className="dot">H</span>
+        HydraFS
+      </NavLink>
+      {NAV_ITEMS.map(it => (
+        <NavLink key={it.to} to={it.to}
+          className={({ isActive }) => 'link' + (isActive ? ' active' : '')}>
+          {it.label}
+        </NavLink>
+      ))}
+      <NavLink to="/files" className="cta">Open Workspace</NavLink>
+    </PillNav>
     <Inner>{children}</Inner>
   </Canvas>
 );

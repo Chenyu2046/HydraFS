@@ -1525,13 +1525,7 @@ static int handle_describe(char *post_data)
         LOG(AI_LOG_MODULE, AI_LOG_PROC, "get_embedding failed for %s\n", md5);
         replace_global_ai_cache(conn, md5, description, NULL, embedding_model, 2);
         replace_user_ai_record(conn, user, md5, -1, description, NULL, embedding_model, 2);
-        if (dashscope_last_error_is_api_key()) {
-            printf("{\"code\":2,\"msg\":\"API Key 无效或欠费：%s\",\"err_code\":\"%s\"}\n",
-                   dashscope_last_error_msg(), dashscope_last_error_code());
-        } else {
-            printf("{\"code\":1,\"msg\":\"embedding failed: %s\"}\n",
-                   dashscope_last_error_msg());
-        }
+        printf("{\"code\":1,\"msg\":\"embedding failed\"}\n");
         goto END;
     }
 
@@ -1694,13 +1688,7 @@ static int handle_search(char *post_data)
                                   query, query_vec, embedding_dimension);
     if (ret != 0) {
         LOG(AI_LOG_MODULE, AI_LOG_PROC, "search embedding failed\n");
-        if (dashscope_last_error_is_api_key()) {
-            printf("{\"code\":2,\"msg\":\"API Key 无效或欠费：%s\",\"err_code\":\"%s\"}\n",
-                   dashscope_last_error_msg(), dashscope_last_error_code());
-        } else {
-            printf("{\"code\":1,\"msg\":\"embedding failed: %s\"}\n",
-                   dashscope_last_error_msg());
-        }
+        printf("{\"code\":1,\"msg\":\"embedding failed\"}\n");
         goto END;
     }
 
@@ -2305,108 +2293,6 @@ static int handle_related(char *post_data)
             cJSON_Delete(resp);
             printf("{\"code\":1,\"msg\":\"query failed\"}\n");
             goto END;
-        }
-
-        /* 兜底方法3：基于 embedding 的语义相似度（cosine = inner product，因为已 L2 归一化） */
-        if (cJSON_GetArraySize(data_arr) < 3) {
-            /* 1) 取当前文件的 embedding */
-            float *cur_vec = NULL;
-            unsigned long cur_len = 0;
-            {
-                char qsql[512] = {0};
-                snprintf(qsql, sizeof(qsql),
-                         "SELECT embedding FROM user_file_ai_desc "
-                         "WHERE user='%s' AND md5='%s' AND status=1 "
-                         "AND embedding IS NOT NULL LIMIT 1",
-                         escaped_user, escaped_md5);
-                if (mysql_query(conn, qsql) == 0) {
-                    MYSQL_RES *r = mysql_store_result(conn);
-                    if (r) {
-                        MYSQL_ROW row = mysql_fetch_row(r);
-                        unsigned long *lens = mysql_fetch_lengths(r);
-                        if (row && row[0] && lens &&
-                            lens[0] == (unsigned long)(embedding_dimension * sizeof(float))) {
-                            cur_vec = (float *)malloc(lens[0]);
-                            if (cur_vec) {
-                                memcpy(cur_vec, row[0], lens[0]);
-                                cur_len = lens[0];
-                            }
-                        }
-                        mysql_free_result(r);
-                    }
-                }
-            }
-
-            if (cur_vec) {
-                /* 2) 取该用户其它已成功文件的 embedding + 文件名 */
-                char qsql[1024] = {0};
-                snprintf(qsql, sizeof(qsql),
-                         "SELECT uad.md5, ufl.file_name, uad.embedding "
-                         "FROM user_file_ai_desc uad "
-                         "JOIN user_file_list ufl ON ufl.user=uad.user AND ufl.md5=uad.md5 "
-                         "WHERE uad.user='%s' AND uad.md5!='%s' "
-                         "AND uad.status=1 AND uad.parse_status='success' "
-                         "AND uad.embedding IS NOT NULL "
-                         "LIMIT 500",
-                         escaped_user, escaped_md5);
-                if (mysql_query(conn, qsql) == 0) {
-                    MYSQL_RES *r = mysql_store_result(conn);
-                    if (r) {
-                        /* top-K（K=3）按相似度降序 */
-                        struct SemHit { char md5[64]; char name[256]; float score; };
-                        struct SemHit topk[3];
-                        int topk_n = 0;
-                        MYSQL_ROW row;
-                        while ((row = mysql_fetch_row(r)) != NULL) {
-                            unsigned long *lens = mysql_fetch_lengths(r);
-                            if (!row[0] || !row[2] || !lens ||
-                                lens[2] != (unsigned long)(embedding_dimension * sizeof(float))) continue;
-                            if (result_array_contains_md5(data_arr, row[0])) continue;
-
-                            const float *other = (const float *)row[2];
-                            float dot = 0.0f;
-                            for (int i = 0; i < embedding_dimension; i++) {
-                                dot += ((const float *)cur_vec)[i] * other[i];
-                            }
-                            /* 阈值：0.6 起算，过低意义不大 */
-                            if (dot < 0.6f) continue;
-
-                            /* 插入 topk（按 score 降序，至多 3 条） */
-                            int pos = topk_n;
-                            for (int i = 0; i < topk_n; i++) {
-                                if (dot > topk[i].score) { pos = i; break; }
-                            }
-                            if (pos < 3) {
-                                /* 右移 */
-                                int end = (topk_n < 3) ? topk_n : 2;
-                                for (int i = end; i > pos; i--) {
-                                    topk[i] = topk[i - 1];
-                                }
-                                strncpy(topk[pos].md5, row[0], sizeof(topk[pos].md5) - 1);
-                                topk[pos].md5[sizeof(topk[pos].md5) - 1] = '\0';
-                                strncpy(topk[pos].name, row[1] ? row[1] : "",
-                                        sizeof(topk[pos].name) - 1);
-                                topk[pos].name[sizeof(topk[pos].name) - 1] = '\0';
-                                topk[pos].score = dot;
-                                if (topk_n < 3) topk_n++;
-                            }
-                        }
-                        mysql_free_result(r);
-
-                        for (int i = 0; i < topk_n && cJSON_GetArraySize(data_arr) < 3; i++) {
-                            cJSON *item = cJSON_CreateObject();
-                            cJSON_AddStringToObject(item, "md5", topk[i].md5);
-                            cJSON_AddStringToObject(item, "filename", topk[i].name);
-                            char reason[128] = {0};
-                            snprintf(reason, sizeof(reason),
-                                     "语义相似度 %.2f", topk[i].score);
-                            cJSON_AddStringToObject(item, "reason", reason);
-                            cJSON_AddItemToArray(data_arr, item);
-                        }
-                    }
-                }
-                free(cur_vec);
-            }
         }
 
         cJSON_AddItemToObject(resp, "data", data_arr);

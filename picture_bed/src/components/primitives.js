@@ -43,7 +43,7 @@ export const PanelBody = styled.div`
 `;
 
 export const SectionTitle = styled.div`
-  display: flex; align-items: center; gap: 12px;
+  display: flex; align-items: baseline; gap: 12px;
   margin: 28px 0 14px;
   h2 {
     margin: 0;
@@ -52,15 +52,9 @@ export const SectionTitle = styled.div`
     color: ${p => p.theme.colors.text};
     letter-spacing: -0.2px;
   }
-  /* 副标说明文字 */
-  > span {
+  span {
     color: ${p => p.theme.colors.text3};
     font-size: 12px;
-  }
-  /* 右侧槽：放视图开关、刷新等小控件，避免在内容区另起一行 Toolbar */
-  .right {
-    margin-left: auto;
-    display: inline-flex; align-items: center; gap: 8px;
   }
 `;
 

@@ -160,23 +160,14 @@ const Knowledge = () => {
     setRebuilding(true);
     try {
       let success = 0;
-      let apiKeyBroken = false;
       for (const f of files) {
         try { await describeFileByMd5(f.md5, f.file_name || f.name, f.type, user, savedKey, true); success++; }
-        catch (e) {
-          if (e.apiKeyInvalid) { apiKeyBroken = true; break; }
-        }
-      }
-      if (apiKeyBroken) {
-        // 全局弹窗已由 services/ai.js 触发，这里再补一句 toast
-        message.error('API Key 无效，已中断重建');
-        return;
+        catch {}
       }
       await rebuildIndex(user);
       message.success(`AI 描述重建完成：${success}/${files.length}`);
       load();
     } catch (e) {
-      if (e.apiKeyInvalid) { /* 全局弹窗已提示 */ return; }
       message.error('重建失败：' + (e.message || ''));
     } finally { setRebuilding(false); }
   };

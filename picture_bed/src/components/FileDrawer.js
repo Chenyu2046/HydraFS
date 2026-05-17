@@ -113,7 +113,6 @@ const FileDrawer = ({ open, file, onClose, onShare, onCancelShare, onDelete, onD
       await describeFileByMd5(file.md5, file.file_name || file.name, file.type, user, apiKey);
       message.success('AI 分析任务已提交');
     } catch (e) {
-      if (e.apiKeyInvalid) { /* 全局弹窗已提示 */ return; }
       message.error('提交失败：' + (e.message || ''));
     } finally { setGenerating(false); }
   };

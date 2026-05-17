@@ -42,7 +42,6 @@
 		"api_key": "",
 		"embedding_model": "text-embedding-v3",
 		"vl_model": "qwen-vl-plus",
-		"summary_model": "qwen-turbo",
 		"embedding_dimension": "1024"
 	},
 

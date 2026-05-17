@@ -53,21 +53,22 @@ const HeroLeft = styled.div`
 
   h1 {
     margin: 0;
-    /* token: fontSize.hero — 用户语言驱动的大标题，固定字号便于跨页心智一致 */
-    font-size: ${p => p.theme.fontSize.hero};
-    line-height: 1.06;
-    letter-spacing: -1.4px;
+    font-size: clamp(40px, 5.6vw, 68px);
+    line-height: 1.04;
+    letter-spacing: -2px;
     font-weight: 600;
     color: ${p => p.theme.colors.text};
 
     .accent {
       background: linear-gradient(115deg,
         ${p => p.theme.colors.accent} 0%,
-        ${p => p.theme.colors.accentHover} 100%);
+        #FF7AB6 60%,
+        #FFB37C 100%);
       -webkit-background-clip: text;
       background-clip: text;
       -webkit-text-fill-color: transparent;
-      font-weight: 600;
+      font-style: italic;
+      font-weight: 500;
     }
   }
 
@@ -191,8 +192,7 @@ const bytesUnit = (b) => {
   return 'GB';
 };
 
-// Hero 副 chips：聚焦用户能直接得到的"动作 + 价值"，不暴露技术栈
-const CHIPS = ['一键上传', '自动生成摘要', '自然语言搜索'];
+const CHIPS = ['分片上传', '秒传检测', 'AI 摘要', '语义标签', '反向链接', '知识图谱'];
 
 const Home = () => {
   const { user, logout } = useAuth();
@@ -291,7 +291,6 @@ const Home = () => {
       setResults(data.files || []);
     } catch (e) {
       if (e.tokenExpired) { message.error('登录已过期'); logout(); return; }
-      if (e.apiKeyInvalid) { /* 全局弹窗已提示 */ return; }
       message.error('搜索失败：' + (e.message || ''));
     } finally { setSearching(false); }
   };
@@ -303,12 +302,12 @@ const Home = () => {
         <HeroLeft>
           <span className="eyebrow"><i />Distributed Knowledge Cloud · v1.0</span>
           <h1>
-            Files in.<br />
-            <span className="accent">Knowledge out.</span>
+            把文件沉淀为<br />
+            <span className="accent">可探索的知识网络</span>
           </h1>
           <p className="sub">
-            上传文件，沉淀知识网络 —— AI 自动生成摘要、提取标签、建立反向链接，
-            让你的资料从"存起来"变成"用得上"。
+            基于分布式云存储、AI 文件理解与双向链接关系建模，
+            将上传文件组织成可检索、可关联、可追溯的个人知识资产。
           </p>
 
           <SearchBlock>
@@ -386,8 +385,8 @@ const Home = () => {
       {/* ============== Bento Grid (Capabilities) ============== */}
       <ContentArea>
         <SectionTitle>
-          <h2>Files in. Knowledge out.</h2>
-          <span>三项 AI 能力，让每一次上传都产生新连接</span>
+          <h2>Three layers, one product</h2>
+          <span>分布式存储 · AI 文件理解 · 双向链接图谱 — 共同构成你的知识资产</span>
         </SectionTitle>
         <Bento />
 
@@ -423,7 +422,6 @@ const Home = () => {
         </Cols>
 
         {/* ============== Trust footer ============== */}
-        {/* 不再列具体技术栈（FastDFS / MySQL / DashScope / FAISS），改为用户视角的承诺 */}
         <div style={{
           marginTop: 56, padding: '24px 0',
           borderTop: '1px solid var(--border)',
@@ -433,13 +431,13 @@ const Home = () => {
         }}>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-              <CheckCircleOutlined style={{ color: 'var(--success)' }} /> 私有云部署，数据自托管
+              <CheckCircleOutlined style={{ color: 'var(--success)' }} /> FastDFS · MySQL · Redis
             </span>
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-              <ApiOutlined /> 可替换的 AI 提供方
+              <ApiOutlined /> DashScope embeddings
             </span>
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-              <NodeIndexOutlined /> 知识可导出，永不锁定
+              <NodeIndexOutlined /> FAISS index
             </span>
           </span>
           <span style={{ fontFamily: 'JetBrains Mono, monospace' }}>HydraFS v1.0</span>
