@@ -30,7 +30,8 @@ spawn-fcgi -a 0.0.0.0 -p 10008 -f /app/bin_cgi/sharepicture
 echo -n "ChunkInit："
 spawn-fcgi -a 0.0.0.0 -p 10009 -f /app/bin_cgi/chunk_init
 echo -n "ChunkUpload："
-spawn-fcgi -a 0.0.0.0 -p 10010 -f /app/bin_cgi/chunk_upload
+CHUNK_UPLOAD_WORKERS=${CHUNK_UPLOAD_WORKERS:-8}
+spawn-fcgi -a 0.0.0.0 -p 10010 -F "$CHUNK_UPLOAD_WORKERS" -f /app/bin_cgi/chunk_upload
 
 # chunk_merge 启动时需要连接 tracker，等待 tracker 就绪
 echo -n "等待 tracker(172.30.0.3:22122) 就绪..."

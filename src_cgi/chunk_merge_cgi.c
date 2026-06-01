@@ -20,6 +20,7 @@
 #include <unistd.h>
 #include <dirent.h>
 #include <errno.h>
+#include <sys/time.h>
 #include "make_log.h"
 #include "util_cgi.h"
 #include "deal_mysql.h"
@@ -37,6 +38,55 @@ static char mysql_pwd[128] = {0};
 static char mysql_db[128] = {0};
 static char redis_ip[30] = {0};
 static char redis_port[10] = {0};
+
+static int acquire_merge_lock(redisContext *redis_conn, char *lock_key, char *lock_token)
+{
+    redisReply *reply = NULL;
+
+    reply = redisCommand(redis_conn, "SET %s %s NX EX 600", lock_key, lock_token);
+    if (reply == NULL)
+    {
+        LOG(CHUNK_LOG_MODULE, CHUNK_LOG_PROC,
+            "acquire merge lock %s err: %s\n", lock_key, redis_conn->errstr);
+        return -1;
+    }
+
+    if (reply->type == REDIS_REPLY_STATUS && strcmp(reply->str, "OK") == 0)
+    {
+        freeReplyObject(reply);
+        return 0;
+    }
+
+    freeReplyObject(reply);
+    return 1;
+}
+
+static int release_merge_lock(redisContext *redis_conn, char *lock_key, char *lock_token)
+{
+    redisReply *reply = NULL;
+    const char *script =
+        "if redis.call('GET', KEYS[1]) == ARGV[1] then "
+        "  return redis.call('DEL', KEYS[1]) "
+        "else "
+        "  return 0 "
+        "end";
+
+    reply = redisCommand(redis_conn, "EVAL %b 1 %s %s", script, strlen(script), lock_key, lock_token);
+    if (reply == NULL || reply->type == REDIS_REPLY_ERROR)
+    {
+        LOG(CHUNK_LOG_MODULE, CHUNK_LOG_PROC,
+            "release merge lock %s err: %s\n",
+            lock_key, reply != NULL ? reply->str : redis_conn->errstr);
+        if (reply != NULL)
+        {
+            freeReplyObject(reply);
+        }
+        return -1;
+    }
+
+    freeReplyObject(reply);
+    return 0;
+}
 
 void read_cfg()
 {
@@ -504,6 +554,9 @@ int main()
         char file_md5[256] = {0};
         char filename[256] = {0};
         char redis_key[512] = {0};
+        char lock_key[512] = {0};
+        char lock_token[512] = {0};
+        struct timeval lock_time;
 
         if (parse_merge_json(buf, user, token, file_md5, filename) != 0)
         {
@@ -533,18 +586,39 @@ int main()
         }
 
         sprintf(redis_key, "chunk:%s", file_md5);
+        sprintf(lock_key, "chunk_merge_lock:%s", file_md5);
+        gettimeofday(&lock_time, NULL);
+        snprintf(lock_token, sizeof(lock_token), "%s:%d:%ld:%ld",
+                 file_md5, getpid(), (long)lock_time.tv_sec, (long)lock_time.tv_usec);
+
+        ret = acquire_merge_lock(redis_conn, lock_key, lock_token);
+        if (ret != 0)
+        {
+            rop_disconnect(redis_conn);
+            if (ret > 0)
+            {
+                printf("{\"code\":1,\"msg\":\"merge in progress, retry later\"}");
+            }
+            else
+            {
+                printf("{\"code\":1,\"msg\":\"merge lock error\"}");
+            }
+            continue;
+        }
 
         {
             int dedupe_ret = bind_existing_file_to_user(user, filename, file_md5);
             if (dedupe_ret == 0 || dedupe_ret == 2)
             {
                 cleanup_chunk_upload_state(redis_conn, redis_key, file_md5);
+                release_merge_lock(redis_conn, lock_key, lock_token);
                 rop_disconnect(redis_conn);
                 printf("{\"code\":0}");
                 continue;
             }
             if (dedupe_ret < 0)
             {
+                release_merge_lock(redis_conn, lock_key, lock_token);
                 rop_disconnect(redis_conn);
                 printf("{\"code\":1,\"msg\":\"db error\"}");
                 continue;
@@ -557,6 +631,7 @@ int main()
         if (rop_hash_get(redis_conn, redis_key, "chunk_count", count_str) != 0)
         {
             LOG(CHUNK_LOG_MODULE, CHUNK_LOG_PROC, "get chunk_count from redis err\n");
+            release_merge_lock(redis_conn, lock_key, lock_token);
             rop_disconnect(redis_conn);
             printf("{\"code\":1}");
             continue;
@@ -565,6 +640,7 @@ int main()
         if (rop_hash_get(redis_conn, redis_key, "filesize", size_str) != 0)
         {
             LOG(CHUNK_LOG_MODULE, CHUNK_LOG_PROC, "get filesize from redis err\n");
+            release_merge_lock(redis_conn, lock_key, lock_token);
             rop_disconnect(redis_conn);
             printf("{\"code\":1}");
             continue;
@@ -577,6 +653,7 @@ int main()
         if (verify_all_chunks(file_md5, chunk_count) != 0)
         {
             LOG(CHUNK_LOG_MODULE, CHUNK_LOG_PROC, "chunks incomplete\n");
+            release_merge_lock(redis_conn, lock_key, lock_token);
             rop_disconnect(redis_conn);
             printf("{\"code\":1,\"msg\":\"chunks incomplete\"}");
             continue;
@@ -587,6 +664,7 @@ int main()
         if (merge_chunks_to_fastdfs(file_md5, chunk_count, filename, fileid) != 0)
         {
             LOG(CHUNK_LOG_MODULE, CHUNK_LOG_PROC, "merge to fastdfs err\n");
+            release_merge_lock(redis_conn, lock_key, lock_token);
             rop_disconnect(redis_conn);
             printf("{\"code\":1,\"msg\":\"merge failed\"}");
             continue;
@@ -603,6 +681,7 @@ int main()
         if (store_fileinfo_to_mysql(user, filename, file_md5, filesize, fileid, fdfs_file_url) != 0)
         {
             LOG(CHUNK_LOG_MODULE, CHUNK_LOG_PROC, "store to mysql err\n");
+            release_merge_lock(redis_conn, lock_key, lock_token);
             rop_disconnect(redis_conn);
             printf("{\"code\":1,\"msg\":\"db error\"}");
             continue;
@@ -610,6 +689,7 @@ int main()
 
         // 清理Redis
         rop_del_key(redis_conn, redis_key);
+        release_merge_lock(redis_conn, lock_key, lock_token);
         rop_disconnect(redis_conn);
 
         LOG(CHUNK_LOG_MODULE, CHUNK_LOG_PROC,

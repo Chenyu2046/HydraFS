@@ -42,6 +42,7 @@
     ]
   },
   "devDependencies": {
+    "@testing-library/jest-dom": "^6.9.1",
     "web-vitals": "^4.2.4"
   }
 }

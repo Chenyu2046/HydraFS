@@ -16,5 +16,12 @@ export const API_CONFIG = {
     AI: '/api/ai'
   },
   CHUNK_SIZE: 10 * 1024 * 1024,  // 10MB per chunk
-  CHUNK_THRESHOLD: 10 * 1024 * 1024  // files > 10MB use chunked upload
+  CHUNK_THRESHOLD: 10 * 1024 * 1024,  // files > 10MB use chunked upload
+  CHUNK_UPLOAD: {
+    INITIAL_CONCURRENCY: 4,
+    MIN_CONCURRENCY: 4,
+    MAX_CONCURRENCY: 32,
+    TIMEOUT_MS: 30000,
+    MAX_RETRIES: 3
+  }
 };

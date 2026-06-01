@@ -34,6 +34,127 @@ void read_cfg()
     LOG(CHUNK_LOG_MODULE, CHUNK_LOG_PROC, "redis:[ip=%s,port=%s]", redis_ip, redis_port);
 }
 
+static int is_complete_chunk(char *chunk_path, long len)
+{
+    struct stat st;
+
+    if (stat(chunk_path, &st) != 0)
+    {
+        return 0;
+    }
+
+    return S_ISREG(st.st_mode) && st.st_size == len;
+}
+
+static int write_chunk_atomic(char *chunk_dir, char *chunk_path, char *chunk_buf, long len)
+{
+    char tmp_path[512] = {0};
+    int fd = -1;
+    long total_written = 0;
+
+    snprintf(tmp_path, sizeof(tmp_path), "%s/.chunk_upload_%d_XXXXXX", chunk_dir, getpid());
+    fd = mkstemp(tmp_path);
+    if (fd < 0)
+    {
+        LOG(CHUNK_LOG_MODULE, CHUNK_LOG_PROC,
+            "mkstemp %s err: %s\n", tmp_path, strerror(errno));
+        return -1;
+    }
+
+    while (total_written < len)
+    {
+        ssize_t n = write(fd, chunk_buf + total_written, len - total_written);
+        if (n <= 0)
+        {
+            LOG(CHUNK_LOG_MODULE, CHUNK_LOG_PROC,
+                "write tmp chunk err: %s\n", strerror(errno));
+            close(fd);
+            unlink(tmp_path);
+            return -1;
+        }
+        total_written += n;
+    }
+
+    if (fsync(fd) != 0)
+    {
+        LOG(CHUNK_LOG_MODULE, CHUNK_LOG_PROC,
+            "fsync %s err: %s\n", tmp_path, strerror(errno));
+        close(fd);
+        unlink(tmp_path);
+        return -1;
+    }
+
+    if (close(fd) != 0)
+    {
+        LOG(CHUNK_LOG_MODULE, CHUNK_LOG_PROC,
+            "close %s err: %s\n", tmp_path, strerror(errno));
+        unlink(tmp_path);
+        return -1;
+    }
+
+    if (is_complete_chunk(chunk_path, len))
+    {
+        unlink(tmp_path);
+        return 0;
+    }
+
+    if (link(tmp_path, chunk_path) != 0)
+    {
+        if (errno == EEXIST && is_complete_chunk(chunk_path, len))
+        {
+            unlink(tmp_path);
+            return 0;
+        }
+
+        LOG(CHUNK_LOG_MODULE, CHUNK_LOG_PROC,
+            "link %s to %s err: %s\n", tmp_path, chunk_path, strerror(errno));
+        unlink(tmp_path);
+        return -1;
+    }
+
+    unlink(tmp_path);
+    return 0;
+}
+
+static int update_uploaded_chunks(redisContext *redis_conn, char *redis_key, int chunk_index)
+{
+    redisReply *reply = NULL;
+    const char *script =
+        "local idx=ARGV[1] "
+        "redis.call('HSET', KEYS[1], 'uploaded_idx:'..idx, '1') "
+        "local seen={} "
+        "local uploaded=redis.call('HGET', KEYS[1], 'uploaded') "
+        "if uploaded and uploaded~='' then "
+        "  for token in string.gmatch(uploaded, '[^,]+') do seen[token]=true end "
+        "end "
+        "local fields=redis.call('HKEYS', KEYS[1]) "
+        "for _,field in ipairs(fields) do "
+        "  local chunk=string.match(field, '^uploaded_idx:(%d+)$') "
+        "  if chunk then seen[chunk]=true end "
+        "end "
+        "local arr={} "
+        "for chunk,_ in pairs(seen) do table.insert(arr, chunk) end "
+        "table.sort(arr, function(a,b) return tonumber(a)<tonumber(b) end) "
+        "redis.call('HSET', KEYS[1], 'uploaded', table.concat(arr, ',')) "
+        "return 1";
+
+    reply = redisCommand(redis_conn, "EVAL %b 1 %s %d", script, strlen(script), redis_key, chunk_index);
+    if (reply == NULL || reply->type == REDIS_REPLY_ERROR)
+    {
+        LOG(CHUNK_LOG_MODULE, CHUNK_LOG_PROC,
+            "update uploaded chunks err: %s\n",
+            reply != NULL ? reply->str : redis_conn->errstr);
+        if (reply != NULL)
+        {
+            freeReplyObject(reply);
+        }
+        return -1;
+    }
+
+    freeReplyObject(reply);
+    return 0;
+}
+
 int main()
 {
     read_cfg();
@@ -109,61 +230,44 @@ int main()
         }
 
         // 写入文件 /tmp/chunks/{md5}/{index}
+        char chunk_dir[512] = {0};
         char chunk_path[512] = {0};
-        sprintf(chunk_path, "%s/%s/%d", CHUNK_TEMP_DIR, file_md5, chunk_index);
+        sprintf(chunk_dir, "%s/%s", CHUNK_TEMP_DIR, file_md5);
+        mkdir(chunk_dir, 0755);
+        sprintf(chunk_path, "%s/%d", chunk_dir, chunk_index);
 
-        int fd = open(chunk_path, O_CREAT | O_WRONLY | O_TRUNC, 0644);
-        if (fd < 0)
+        if (is_complete_chunk(chunk_path, len))
         {
             LOG(CHUNK_LOG_MODULE, CHUNK_LOG_PROC,
-                "open %s err: %s\n", chunk_path, strerror(errno));
+                "chunk already exists: %s (%ld bytes)\n", chunk_path, len);
+        }
+        else if (write_chunk_atomic(chunk_dir, chunk_path, chunk_buf, len) != 0)
+        {
             free(chunk_buf);
             printf("{\"code\":1}");
             continue;
         }
-
-        long total_written = 0;
-        while (total_written < len)
-        {
-            int n = write(fd, chunk_buf + total_written, len - total_written);
-            if (n <= 0) break;
-            total_written += n;
-        }
-        close(fd);
         free(chunk_buf);
 
-        if (total_written != len)
+        // 更新Redis中已上传的分片索引
+        redisContext *redis_conn = rop_connectdb_nopwd(redis_ip, redis_port);
+        if (redis_conn == NULL)
         {
-            LOG(CHUNK_LOG_MODULE, CHUNK_LOG_PROC, "write incomplete\n");
+            LOG(CHUNK_LOG_MODULE, CHUNK_LOG_PROC, "redis connect err\n");
             printf("{\"code\":1}");
             continue;
         }
 
-        // 更新Redis中已上传的分片索引
-        redisContext *redis_conn = rop_connectdb_nopwd(redis_ip, redis_port);
-        if (redis_conn != NULL)
         {
             char redis_key[512] = {0};
             sprintf(redis_key, "chunk:%s", file_md5);
 
-            char uploaded[1024] = {0};
-            int r = rop_hash_get(redis_conn, redis_key, "uploaded", uploaded);
-
-            if (r == 0 && strlen(uploaded) > 0)
+            if (update_uploaded_chunks(redis_conn, redis_key, chunk_index) != 0)
             {
-                // 追加 ",index"
-                char new_uploaded[1024] = {0};
-                sprintf(new_uploaded, "%s,%d", uploaded, chunk_index);
-                rop_hash_set(redis_conn, redis_key, "uploaded", new_uploaded);
+                rop_disconnect(redis_conn);
+                printf("{\"code\":1}");
+                continue;
             }
-            else
-            {
-                // 首个分片
-                char new_uploaded[32] = {0};
-                sprintf(new_uploaded, "%d", chunk_index);
-                rop_hash_set(redis_conn, redis_key, "uploaded", new_uploaded);
-            }
-
             rop_disconnect(redis_conn);
         }
 

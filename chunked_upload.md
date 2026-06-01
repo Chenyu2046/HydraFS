@@ -2,7 +2,16 @@
 
 ## 概述
 
-当上传文件大于 10MB 时，系统自动启用分片上传模式。文件被切割为 10MB 的分片逐个上传，支持断点续传（上传中断后可从已完成的分片继续），上传完成后服务端通过 FastDFS Appender API 合并分片。
+当上传文件大于 10MB 时，系统自动启用分片上传模式。文件被切割为 10MB 的分片，前端使用 AIMD 自适应并发窗口上传，支持断点续传（上传中断后可从已完成的分片继续），上传完成后服务端通过 FastDFS Appender API 合并分片。现有 HTTP API 路径和请求/响应格式保持兼容：`/api/chunk_init`、`/api/chunk_upload`、`/api/chunk_merge` 不变。
+
+## P0 功能清单
+
+- 前端 AIMD 自适应并发上传：初始窗口 4，最小 4，最大 32。
+- 根据最近样本的 RTT、失败率、超时率调节窗口；健康时加 1，退化或失败时减半。
+- 单片上传 30s 超时，失败后最多重试 3 次；重试成功前不推进进度。
+- 后端 `chunk_upload` 支持多 worker，默认 `CHUNK_UPLOAD_WORKERS=8`。
+- 分片写入使用临时文件、`fsync`、`link(tmp_path, chunk_path)` no-overwrite 发布；同大小完整分片已存在时跳过重写，支持幂等重传。
+- Redis 上传进度通过 Lua 脚本原子更新，维护 `uploaded_idx:{index}` 与排序后的 `uploaded` 字段。
 
 ## 架构设计
 
@@ -18,9 +27,9 @@
 
 3. 跳过已上传分片
 4. POST /api/chunk_upload?md5=x&index=i  chunk_upload_cgi (port 10010)
-   Body: 二进制分片数据 ─────────►    - 保存到 /tmp/chunks/{md5}/{index}
-   ◄────── {code:0}                    - 更新Redis已上传索引
-   (重复直到所有分片上传完毕)
+   Body: 二进制分片数据 ─────────►    - 临时文件写入 + fsync + link发布
+   ◄────── {code:0}                    - Lua原子更新Redis已上传索引
+   (AIMD并发重复直到所有分片上传完毕)
 
 5. POST /api/chunk_merge ────────►   chunk_merge_cgi (port 10011)
    {user,token,md5,filename}          - 验证所有分片完整
@@ -146,6 +155,8 @@ TTL: 24小时（过期自动清理）
     └── 3        # 分片3 (最后一片，可能不足10MB)
 ```
 
+`chunk_upload` 不直接覆盖目标分片，而是先写入同目录临时文件，`fsync()` 后通过 `link(tmp_path, chunk_path)` no-overwrite 创建 `/tmp/chunks/{md5}/{index}`，成功后 `unlink(tmp_path)`。如果目标分片已存在且大小与本次请求体一致，认为该分片已完整写入，直接返回成功并继续更新 Redis 进度，保证重试和重复请求幂等。
+
 合并过程中每个分片追加到 FastDFS 后立即 `unlink()` 删除，合并完成后 `rmdir()` 删除目录。
 
 ## 前端实现要点
@@ -154,13 +165,24 @@ TTL: 24小时（过期自动清理）
 
 **MD5计算:** 使用 SparkMD5 分块读取计算，避免大文件一次性加载到内存。
 
-**进度条:** 分片上传占 90%，合并占 10%。每完成一个分片更新进度。
+**AIMD 并发:** `uploadChunksWithAimd()` 初始并发 4，窗口范围 4~32。最近 16 个样本中失败率大于 20%、超时率大于 10%、或单次 RTT 超过成功平均 RTT 的 2 倍时窗口减半；无失败、无超时且 RTT 不超过成功平均 RTT 的 1.5 倍时窗口加 1。
+
+**单片超时和重试:** 每片通过 `AbortController` 设置 30s 超时，失败或超时会记录到 AIMD 窗口并重试；默认 `MAX_RETRIES=3`，即单片最多 4 次尝试。
+
+**进度条:** 分片上传占 90%，合并占 10%。只有分片最终上传成功后才更新进度，重试中的失败不计入完成数。
 
 **配置项 (`src/config/index.js`):**
 
 ```js
 CHUNK_SIZE: 10 * 1024 * 1024,      // 每个分片大小: 10MB
-CHUNK_THRESHOLD: 10 * 1024 * 1024   // 启用分片的阈值: 10MB
+CHUNK_THRESHOLD: 10 * 1024 * 1024,  // 启用分片的阈值: 10MB
+CHUNK_UPLOAD: {
+  INITIAL_CONCURRENCY: 4,
+  MIN_CONCURRENCY: 4,
+  MAX_CONCURRENCY: 32,
+  TIMEOUT_MS: 30000,
+  MAX_RETRIES: 3
+}
 ```
 
 ## 服务端口分配
@@ -168,13 +190,14 @@ CHUNK_THRESHOLD: 10 * 1024 * 1024   // 启用分片的阈值: 10MB
 | CGI程序 | 端口 | 说明 |
 |---------|------|------|
 | chunk_init | 10009 | 分片初始化 |
-| chunk_upload | 10010 | 分片接收 |
+| chunk_upload | 10010 | 分片接收，默认 8 workers |
 | chunk_merge | 10011 | 分片合并 |
 
 ## Nginx 配置要点
 
 - `client_max_body_size 12m` — 允许单个分片(10MB) + HTTP头部开销
 - `chunk_upload` 设置 `fastcgi_read_timeout 300` — 大分片上传超时5分钟
+- `chunk_upload` 由 `spawn-fcgi -F "$CHUNK_UPLOAD_WORKERS"` 启动，环境变量未设置时默认 8 个 worker
 - `chunk_merge` 设置 `fastcgi_read_timeout 600` — 合并操作超时10分钟
 - 三个 location 块均配置完整 CORS 头
 
