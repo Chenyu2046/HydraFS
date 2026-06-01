@@ -99,6 +99,25 @@ const NavItem = styled(NavLink)`
   &.active .icon { opacity: 1; }
 `;
 
+const NavAnchor = styled.a`
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 7px 14px;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 500;
+  color: ${p => p.theme.colors.text2};
+  text-decoration: none;
+  white-space: nowrap;
+  transition: all 160ms ${p => p.theme.ease.out};
+
+  .icon { font-size: 14px; opacity: 0.85; display: inline-flex; }
+
+  &:hover {
+    color: ${p => p.theme.colors.text};
+    background: ${p => p.theme.colors.panelHover};
+  }
+`;
+
 const Crumbs = styled.div`
   display: flex; align-items: center; gap: 8px;
   color: ${p => p.theme.colors.text2};
@@ -156,11 +175,11 @@ const Avatar = styled.span`
 `;
 
 const NAV_ITEMS = [
-  { to: '/',          icon: <AppstoreOutlined />,  label: '概览' },
-  { to: '/files',     icon: <FolderOutlined />,    label: '文件' },
-  { to: '/knowledge', icon: <BookOutlined />,      label: '知识' },
-  { to: '/graph',     icon: <NodeIndexOutlined />, label: '图谱' },
-  { to: '/shared',    icon: <ShareAltOutlined />,  label: '分享' },
+  { to: '/',          icon: <AppstoreOutlined />,  label: 'AI 搜索' },
+  { to: '/files',     icon: <FolderOutlined />,    label: '文件管理' },
+  { to: '/graph',     icon: <NodeIndexOutlined />, label: '知识图谱' },
+  { to: '/knowledge', icon: <BookOutlined />,      label: 'AI Wiki' },
+  { to: '/shared',    icon: <ShareAltOutlined />,  label: '分享管理' },
 ];
 
 const Topbar = ({ crumbs = [], transparent = false }) => {
@@ -170,6 +189,14 @@ const Topbar = ({ crumbs = [], transparent = false }) => {
   const loc = useLocation();
 
   const handleLogout = () => { logout(); nav('/login'); };
+  const handleStatusClick = (event) => {
+    event.preventDefault();
+    if (loc.pathname !== '/') {
+      nav('/#system-status');
+      return;
+    }
+    document.getElementById('system-status')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
 
   const menu = {
     items: [
@@ -201,6 +228,10 @@ const Topbar = ({ crumbs = [], transparent = false }) => {
             </NavItem>
           );
         })}
+        <NavAnchor href="/#system-status" onClick={handleStatusClick}>
+          <span className="icon"><NodeIndexOutlined /></span>
+          <span>系统状态</span>
+        </NavAnchor>
 
         {crumbs.length > 0 && (
           <Crumbs>

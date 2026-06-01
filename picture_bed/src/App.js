@@ -18,11 +18,11 @@ const PrivateRoute = ({ children }) => {
 };
 
 const CRUMBS = {
-  '/': ['Overview'],
-  '/files': ['Files'],
-  '/knowledge': ['Knowledge'],
-  '/graph': ['Graph'],
-  '/shared': ['Shared'],
+  '/': ['AI 搜索'],
+  '/files': ['文件管理'],
+  '/knowledge': ['AI Wiki'],
+  '/graph': ['知识图谱'],
+  '/shared': ['分享管理'],
 };
 
 const Shell = ({ children }) => {

@@ -4,7 +4,7 @@ import styled from '@emotion/styled';
 /**
  * MetricStrip
  * Hero canvas 底部的轻量 trust metrics
- * - 不像 StatBar 那样横一条带 border
+ * - 作为首页画布底部的状态摘要
  * - 字号层级靠上下叠加（22px 数字 + 11px label）
  * - demo 数据用更淡的颜色 + ".demo" 角标，不糊脸
  */

@@ -180,7 +180,7 @@ const WikiDetail = () => {
             <Block>
               <h3>Tags</h3>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                {tags.map((t, i) => <Tag key={i} color="purple" bordered={false}>#{t}</Tag>)}
+                {tags.map((t, i) => <Tag key={i} className="semantic-tag" bordered={false}>#{t}</Tag>)}
               </div>
             </Block>
           )}
@@ -205,7 +205,7 @@ const WikiDetail = () => {
             <Block>
               <h3><LinkOutlined /> Concept Links</h3>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                {links.map((l, i) => <Tag key={i} bordered={false} color="blue">{l}</Tag>)}
+                {links.map((l, i) => <Tag key={i} bordered={false} className="warm-tag">{l}</Tag>)}
               </div>
             </Block>
           )}

@@ -3,7 +3,7 @@ import styled from '@emotion/styled';
 import { Tabs, Table, Button, Tooltip, message, Skeleton, Empty, Tag, Modal, Input } from 'antd';
 import {
   DownloadOutlined, SaveOutlined, FileOutlined, FilePdfOutlined, FileWordOutlined,
-  FileExcelOutlined, FileZipOutlined, FileTextOutlined, EyeOutlined, SearchOutlined,
+  FileExcelOutlined, FileZipOutlined, FileTextOutlined, SearchOutlined,
   TrophyOutlined, TeamOutlined,
 } from '@ant-design/icons';
 import { useLocation, useNavigate } from 'react-router-dom';
@@ -167,8 +167,8 @@ const SharedHub = () => {
   return (
     <div>
       <PageHead>
-        <h1>Shared</h1>
-        <p>来自其他用户的公开文件 · 共 {allFiles.length} 个</p>
+        <h1>分享管理</h1>
+        <p>浏览公开文件、下载榜与转存入口 · 共 {allFiles.length} 个</p>
       </PageHead>
 
       <Tabs
@@ -241,7 +241,7 @@ const SharedHub = () => {
       {tab === 'top' && (
         <Panel style={{ overflow: 'hidden', marginTop: 4 }}>
           <PanelHeader>
-            <h3>Top Downloads</h3>
+            <h3>下载榜</h3>
             <span className="subtitle">按累计下载量排序</span>
           </PanelHeader>
           {loading

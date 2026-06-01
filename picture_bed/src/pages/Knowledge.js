@@ -136,13 +136,13 @@ const Knowledge = () => {
   return (
     <div>
       <PageHead>
-        <h1>Knowledge</h1>
+        <h1>AI Wiki</h1>
         <p>每个上传的文件都会被自动分析、嵌入向量，并基于相似度与其他文件建立双向连接，形成知识网络。</p>
       </PageHead>
 
       <Panel>
         <PanelHeader>
-          <h3>AI Pipeline</h3>
+          <h3>AI 文件理解流水线</h3>
           <Pill>DASHSCOPE</Pill>
           <span className="right">
             <Button icon={<ReloadOutlined />} loading={rebuilding} onClick={handleRebuild}>
@@ -163,7 +163,7 @@ const Knowledge = () => {
       </Panel>
 
       <SectionTitle>
-        <h2>Knowledge Nodes</h2>
+        <h2>知识节点</h2>
         <span>{wikiNodes.length} 个已生成的知识节点</span>
       </SectionTitle>
 
@@ -199,8 +199,8 @@ const Knowledge = () => {
               <div className="summary">该节点已被 AI 索引。点击查看完整摘要、关键概念以及与其他文件的反向链接。</div>
               <div className="tags">
                 <Tag bordered={false} style={{ fontSize: 10 }}>{(f.type || '').toUpperCase()}</Tag>
-                <Tag bordered={false} color="purple" style={{ fontSize: 10 }}>WIKI</Tag>
-                {f.share_status === 1 && <Tag bordered={false} color="blue" style={{ fontSize: 10 }}>SHARED</Tag>}
+                <Tag bordered={false} className="semantic-tag" style={{ fontSize: 10 }}>WIKI</Tag>
+                {f.share_status === 1 && <Tag bordered={false} className="warm-tag" style={{ fontSize: 10 }}>SHARED</Tag>}
               </div>
               <div className="foot">
                 <span>{f.create_time}</span>

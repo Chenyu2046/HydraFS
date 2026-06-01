@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Input, Segmented, Button, Table, Tag, message, Space, Tooltip, Empty, Skeleton } from 'antd';
 import {
   SearchOutlined, AppstoreOutlined, UnorderedListOutlined, ReloadOutlined,
@@ -9,12 +9,11 @@ import {
 import styled from '@emotion/styled';
 import { useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { fetchUserImages, uploadImage, deleteImage, shareFile, cancelShareFile, pvFile } from '../services/images';
-import { describeFile } from '../services/ai';
+import { fetchUserImages, deleteImage, shareFile, cancelShareFile, pvFile } from '../services/images';
 import QuickUpload from '../components/QuickUpload';
 import FileGrid from '../components/FileGrid';
 import FileDrawer from '../components/FileDrawer';
-import { Panel, PanelHeader, PanelBody, SectionTitle } from '../components/primitives';
+import { Panel, PanelBody, SectionTitle } from '../components/primitives';
 import { classifyFileType } from '../mock/graph';
 
 // ====== Styled ======
@@ -90,7 +89,7 @@ const FileList = () => {
   const [keyword, setKeyword] = useState('');
   const [drawerFile, setDrawerFile] = useState(null);
 
-  const load = async () => {
+  const load = useCallback(async () => {
     setLoading(true);
     try {
       // 文件主页：先拉 100 兜底，后续可接前端分页/虚拟滚动
@@ -100,9 +99,9 @@ const FileList = () => {
       if (e.tokenExpired) { message.error('登录已过期'); logout(); return; }
       message.error('获取文件列表失败');
     } finally { setLoading(false); }
-  };
+  }, [logout, user]);
 
-  useEffect(() => { if (user?.token) load(); /* eslint-disable-next-line */ }, [user]);
+  useEffect(() => { if (user?.token) load(); }, [user, load]);
 
   const filtered = useMemo(() => {
     let arr = files;
@@ -130,8 +129,8 @@ const FileList = () => {
         <Space size={10}>
           <span style={{ fontSize: 16, color: 'var(--accent)' }}>{TYPE_ICON[(r.type||'').toLowerCase()] || <FileOutlined />}</span>
           <span style={{ fontWeight: 500 }}>{t || r.name}</span>
-          {r.share_status === 1 && <Tag color="blue" bordered={false}>已分享</Tag>}
-          {r.wiki_ready === 1 && <Tag color="purple" bordered={false}>Wiki</Tag>}
+          {r.share_status === 1 && <Tag className="warm-tag" bordered={false}>已分享</Tag>}
+          {r.wiki_ready === 1 && <Tag className="semantic-tag" bordered={false}>Wiki</Tag>}
         </Space>
       ),
     },
@@ -156,14 +155,14 @@ const FileList = () => {
     <div>
       <PageHead>
         <div>
-          <h1>Files</h1>
-          <p>统一管理你云端的所有文件 · {files.length} 个 · {formatBytes(files.reduce((s, f) => s + (f.size || 0), 0))}</p>
+          <h1>文件管理</h1>
+          <p>上传、下载、分享与 AI 索引状态统一管理 · {files.length} 个 · {formatBytes(files.reduce((s, f) => s + (f.size || 0), 0))}</p>
         </div>
       </PageHead>
 
       <QuickUpload onDone={load} />
 
-      <SectionTitle><h2>All Files</h2><span>支持搜索 / 类型筛选 / 网格与表格双视图</span></SectionTitle>
+      <SectionTitle><h2>云端文件</h2><span>表格优先呈现关键信息，网格用于快速预览</span></SectionTitle>
 
       <Toolbar>
         <Input

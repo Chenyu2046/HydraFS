@@ -219,8 +219,8 @@ const FileDrawer = ({ open, file, onClose, onShare, onCancelShare, onDelete, onD
         <span className="k">MD5</span>       <span className="v">{(file.md5 || '').slice(0, 16)}…</span>
         <span className="k">Uploaded</span>  <span className="v">{file.create_time}</span>
         <span className="k">Status</span>    <span className="v">
-          {file.share_status === 1 ? <Tag color="blue" bordered={false}>已分享</Tag> : <Tag bordered={false}>私有</Tag>}
-          {wikiReady && <Tag color="purple" bordered={false}>Wiki</Tag>}
+          {file.share_status === 1 ? <Tag className="warm-tag" bordered={false}>已分享</Tag> : <Tag bordered={false}>私有</Tag>}
+          {wikiReady && <Tag className="semantic-tag" bordered={false}>Wiki</Tag>}
         </span>
       </Kv>
 

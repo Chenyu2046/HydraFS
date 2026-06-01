@@ -56,7 +56,7 @@ const Headline = styled.h1`
   line-height: 1.18;
   color: ${p => p.theme.colors.text};
   span {
-    background: linear-gradient(120deg, ${p => p.theme.colors.accent}, ${p => p.theme.colors.info});
+    background: linear-gradient(120deg, ${p => p.theme.colors.accent}, ${p => p.theme.colors.warn});
     -webkit-background-clip: text; background-clip: text;
     -webkit-text-fill-color: transparent;
   }
@@ -214,7 +214,7 @@ const Login = () => {
       </Hero>
 
       <FormSide style={{ position: 'relative' }}>
-        <ThemeMini onClick={toggle}>{mode === 'dark' ? '☀ Light' : '🌙 Dark'}</ThemeMini>
+        <ThemeMini onClick={toggle}>{mode === 'dark' ? 'Light mode' : 'Dark mode'}</ThemeMini>
         <Card>
           <div>
             <h2>{isReg ? '创建账号' : '欢迎回来'}</h2>

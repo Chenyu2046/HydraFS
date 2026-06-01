@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import styled from '@emotion/styled';
 import { useTheme } from '@emotion/react';
 import { useLocation, useNavigate } from 'react-router-dom';
@@ -164,7 +164,7 @@ const Graph = () => {
 
   const focusId = useMemo(() => new URLSearchParams(loc.search).get('focus'), [loc.search]);
 
-  const load = async () => {
+  const load = useCallback(async () => {
     setLoading(true);
     try {
       // 图谱视图节点上限 200，更多需要 buildGraphFromFiles 内部 slice 控制
@@ -180,9 +180,9 @@ const Graph = () => {
       if (e.tokenExpired) { message.error('登录已过期'); logout(); return; }
       setData(MOCK_GRAPH); setUsingMock(true);
     } finally { setLoading(false); }
-  };
+  }, [logout, user]);
 
-  useEffect(() => { if (user?.token) load(); /* eslint-disable-next-line */ }, [user]);
+  useEffect(() => { if (user?.token) load(); }, [user, load]);
 
   // 监听 stage 尺寸
   useEffect(() => {
@@ -240,7 +240,7 @@ const Graph = () => {
     <div>
       <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', marginBottom: 16 }}>
         <div>
-          <h1 style={{ margin: '0 0 4px', fontSize: 24, fontWeight: 700, letterSpacing: '-0.4px' }}>Knowledge Graph</h1>
+          <h1 style={{ margin: '0 0 4px', fontSize: 24, fontWeight: 700, letterSpacing: '-0.4px' }}>知识图谱</h1>
           <p style={{ margin: 0, fontSize: 13, opacity: 0.7 }}>
             文件之间通过共享概念自动建立双向链接 · 拖拽节点 / 滚轮缩放 / 点击选中
           </p>
@@ -255,7 +255,7 @@ const Graph = () => {
         <Stage>
           <StageHead>
             <NodeIndexOutlined style={{ color: theme.colors.accent }} />
-            <h3>Force-directed View</h3>
+            <h3>双链关系视图</h3>
             {usingMock && <Pill>DEMO DATA</Pill>}
             {!usingMock && data.nodes.length > 0 && data.links.length === 0 && (
               <Pill>RELATIONS PENDING</Pill>
@@ -366,7 +366,7 @@ const Graph = () => {
         <Sidebar>
           <Panel>
             <PanelHeader>
-              <h3>Selection</h3>
+              <h3>当前选中</h3>
               {selected && <Pill>{(selected.type || 'other').toUpperCase()}</Pill>}
             </PanelHeader>
             <div style={{ padding: '14px 16px' }}>
@@ -395,7 +395,7 @@ const Graph = () => {
 
           <Panel style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
             <PanelHeader>
-              <h3>Nodes</h3>
+              <h3>节点列表</h3>
               <span className="subtitle">{filteredList.length}/{data.nodes.length}</span>
             </PanelHeader>
             <div style={{ padding: '10px 14px' }}>

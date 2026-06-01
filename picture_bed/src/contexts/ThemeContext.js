@@ -6,7 +6,7 @@ import { themes, tokens, buildAntdTheme } from '../styles/tokens';
 const STORAGE_KEY = 'hydra.theme';
 
 const ThemeCtx = createContext({
-  mode: 'dark',
+  mode: 'light',
   toggle: () => {},
   setMode: () => {},
 });
@@ -15,7 +15,7 @@ export const useThemeMode = () => useContext(ThemeCtx);
 
 export const ThemeProvider = ({ children }) => {
   const [mode, setMode] = useState(() => {
-    try { return localStorage.getItem(STORAGE_KEY) || 'dark'; } catch { return 'dark'; }
+    try { return localStorage.getItem(STORAGE_KEY) || 'light'; } catch { return 'light'; }
   });
 
   useEffect(() => {

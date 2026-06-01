@@ -69,11 +69,11 @@ const Item = styled(NavLink)`
 `;
 
 const items = [
-  { to: '/',           icon: <AppstoreOutlined />,  label: 'Overview' },
-  { to: '/files',      icon: <FolderOutlined />,    label: 'Files' },
-  { to: '/knowledge',  icon: <BookOutlined />,      label: 'Knowledge' },
-  { to: '/graph',      icon: <NodeIndexOutlined />, label: 'Graph' },
-  { to: '/shared',     icon: <ShareAltOutlined />,  label: 'Shared' },
+  { to: '/',           icon: <AppstoreOutlined />,  label: 'AI 搜索' },
+  { to: '/files',      icon: <FolderOutlined />,    label: '文件管理' },
+  { to: '/graph',      icon: <NodeIndexOutlined />, label: '知识图谱' },
+  { to: '/knowledge',  icon: <BookOutlined />,      label: 'AI Wiki' },
+  { to: '/shared',     icon: <ShareAltOutlined />,  label: '分享管理' },
 ];
 
 const Sidebar = () => {

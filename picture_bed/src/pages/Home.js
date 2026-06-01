@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import styled from '@emotion/styled';
 import { Button, Input, Empty, Spin, message } from 'antd';
 import {
@@ -13,7 +13,6 @@ import { aiSearch } from '../services/ai';
 
 import { HeroCanvas, ProductWindow } from '../components/HeroCanvas';
 import MetricStrip from '../components/MetricStrip';
-import Bento from '../components/Bento';
 import MiniGraph from '../components/MiniGraph';
 import QuickUpload from '../components/QuickUpload';
 import AIPipeline from '../components/AIPipeline';
@@ -62,8 +61,8 @@ const HeroLeft = styled.div`
     .accent {
       background: linear-gradient(115deg,
         ${p => p.theme.colors.accent} 0%,
-        #FF7AB6 60%,
-        #FFB37C 100%);
+        ${p => p.theme.colors.warn} 62%,
+        ${p => p.theme.colors.graphArchive} 100%);
       -webkit-background-clip: text;
       background-clip: text;
       -webkit-text-fill-color: transparent;
@@ -147,6 +146,94 @@ const Cols = styled.div`
   @media (max-width: 980px) { grid-template-columns: 1fr; }
 `;
 
+const ProductGrid = styled.div`
+  display: grid;
+  grid-template-columns: 1.1fr 0.9fr;
+  gap: 16px;
+  @media (max-width: 980px) { grid-template-columns: 1fr; }
+`;
+
+const EntryCard = styled.div`
+  position: relative;
+  overflow: hidden;
+  min-height: 220px;
+  border-radius: 16px;
+  border: 1px solid ${p => p.theme.colors.border};
+  background: ${p => p.theme.colors.panel};
+  padding: 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+
+  &::after {
+    content: '';
+    position: absolute;
+    width: 220px; height: 220px;
+    right: -70px; top: -80px;
+    border-radius: 50%;
+    background: radial-gradient(circle, ${p => p.theme.colors.accentSoft} 0%, transparent 68%);
+    pointer-events: none;
+  }
+
+  .kicker {
+    width: fit-content;
+    padding: 4px 9px;
+    border-radius: 999px;
+    font-family: ${p => p.theme.fontFamily.mono};
+    font-size: 11px;
+    color: ${p => p.theme.colors.accent};
+    background: ${p => p.theme.colors.accentSoft};
+    border: 1px solid ${p => p.theme.colors.accentBorder};
+  }
+  h3 {
+    margin: 0;
+    max-width: 520px;
+    color: ${p => p.theme.colors.text};
+    font-family: ${p => p.theme.fontFamily.heading};
+    font-size: 24px;
+    line-height: 1.2;
+    letter-spacing: -0.6px;
+  }
+  p {
+    margin: 0;
+    max-width: 560px;
+    color: ${p => p.theme.colors.text2};
+    line-height: 1.65;
+  }
+  .actions { margin-top: auto; display: flex; flex-wrap: wrap; gap: 10px; }
+`;
+
+const StatusCard = styled(Panel)`
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+
+  .row {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 12px;
+    align-items: center;
+    padding: 12px 0;
+    border-top: 1px solid ${p => p.theme.colors.border};
+  }
+  .row:first-of-type { border-top: none; padding-top: 0; }
+  .label {
+    color: ${p => p.theme.colors.text};
+    font-weight: 600;
+  }
+  .hint {
+    color: ${p => p.theme.colors.text3};
+    font-size: 12px;
+    margin-top: 2px;
+  }
+  .value {
+    font-family: ${p => p.theme.fontFamily.mono};
+    color: ${p => p.theme.colors.warn};
+    font-weight: 700;
+  }
+`;
+
 const SearchResults = styled.div`
   margin-top: 8px;
 `;
@@ -203,7 +290,7 @@ const Home = () => {
   const [searching, setSearching] = useState(false);
   const [results, setResults] = useState(null);
 
-  const load = async () => {
+  const load = useCallback(async () => {
     setLoading(true);
     try {
       const f = await fetchUserImages(user, { count: 50 });
@@ -211,14 +298,13 @@ const Home = () => {
     } catch (e) {
       if (e.tokenExpired) { message.error('登录已过期'); logout(); return; }
     } finally { setLoading(false); }
-  };
+  }, [logout, user]);
 
   useEffect(() => {
     if (user?.token) {
       load();
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user]);
+  }, [user, load]);
 
   /* ====== 数据派生 ====== */
   const isEmptyAccount = !files || files.length === 0;
@@ -226,24 +312,24 @@ const Home = () => {
   const metrics = useMemo(() => {
     if (isEmptyAccount) {
       return [
-        { label: 'Files indexed',    value: MOCK_STATS.files,                 demo: true },
-        { label: 'Stored',           value: MOCK_STATS.storageGB, unit: 'GB', demo: true },
-        { label: 'Knowledge nodes',  value: MOCK_STATS.nodes,                 demo: true },
-        { label: 'Backlinks',        value: MOCK_STATS.edges,                 demo: true },
-        { label: 'Pending AI index', value: MOCK_STATS.aiTasks,               demo: true },
-        { label: 'Shared spaces',    value: MOCK_STATS.sharedFiles,           demo: true },
+        { label: '已索引文件', value: MOCK_STATS.files,                 demo: true },
+        { label: '存储容量',   value: MOCK_STATS.storageGB, unit: 'GB', demo: true },
+        { label: '知识节点',   value: MOCK_STATS.nodes,                 demo: true },
+        { label: '双链关系',   value: MOCK_STATS.edges,                 demo: true },
+        { label: '待处理索引', value: MOCK_STATS.aiTasks,               demo: true },
+        { label: '共享空间',   value: MOCK_STATS.sharedFiles,           demo: true },
       ];
     }
     const totalSize = files.reduce((s, f) => s + (f.size || 0), 0);
     const shared = files.filter(f => f.share_status === 1).length;
     const wikiReady = files.filter(f => f.wiki_ready === 1).length;
     return [
-      { label: 'Files indexed',    value: files.length },
-      { label: 'Stored',           value: formatBytes(totalSize), unit: bytesUnit(totalSize) },
-      { label: 'Knowledge nodes',  value: wikiReady },
-      { label: 'Backlinks',        value: wikiReady > 0 ? '—' : 0 },
-      { label: 'Pending AI index', value: files.length - wikiReady },
-      { label: 'Shared spaces',    value: shared },
+      { label: '已索引文件', value: files.length },
+      { label: '存储容量',   value: formatBytes(totalSize), unit: bytesUnit(totalSize) },
+      { label: '知识节点',   value: wikiReady },
+      { label: '双链关系',   value: wikiReady > 0 ? '-' : 0 },
+      { label: '待处理索引', value: files.length - wikiReady },
+      { label: '共享空间',   value: shared },
     ];
   }, [files, isEmptyAccount]);
 
@@ -293,14 +379,14 @@ const Home = () => {
       {/* ============== Hero Canvas ============== */}
       <HeroCanvas>
         <HeroLeft>
-          <span className="eyebrow"><i />Distributed Knowledge Cloud · v1.0</span>
+          <span className="eyebrow"><i />分布式双链知识云 · v1.0</span>
           <h1>
-            把文件沉淀为<br />
-            <span className="accent">可探索的知识网络</span>
+            分布式云存储，<br />
+            <span className="accent">长出双链知识网络</span>
           </h1>
           <p className="sub">
-            基于分布式云存储、AI 文件理解与双向链接关系建模，
-            将上传文件组织成可检索、可关联、可追溯的个人知识资产。
+            文件进入分片存储后自动生成 AI 摘要、语义标签与反向链接。
+            这里不是普通网盘，而是可检索、可关联、可追溯的知识云。
           </p>
 
           <SearchBlock>
@@ -309,7 +395,7 @@ const Home = () => {
                 size="large"
                 variant="borderless"
                 prefix={<SearchOutlined style={{ color: 'var(--text2)', opacity: 0.6 }} />}
-                placeholder="上传文件，或搜索摘要、标签与知识关系…"
+                placeholder="搜索文件名、AI 摘要、标签或双链关系…"
                 value={q}
                 onChange={e => setQ(e.target.value)}
                 onPressEnter={handleSearch}
@@ -319,7 +405,7 @@ const Home = () => {
                 onClick={handleSearch}
                 style={{ borderRadius: 12, paddingInline: 20, height: 44 }}
                 icon={<ThunderboltOutlined />}>
-                AI Search
+                AI 搜索
               </Button>
             </div>
             <div className="chips">
@@ -335,8 +421,8 @@ const Home = () => {
           {results && !searching && (
             <Panel style={{ marginTop: 4 }}>
               <PanelHeader>
-                <h3>Search Results</h3>
-                <span className="subtitle">{results.length} matched</span>
+                <h3>语义搜索结果</h3>
+                <span className="subtitle">{results.length} 个匹配</span>
               </PanelHeader>
               <PanelBody $pad="0 18px 12px">
                 {results.length === 0 ? (
@@ -364,7 +450,7 @@ const Home = () => {
         </HeroLeft>
 
         <div>
-          <ProductWindow url="hydrafs.app/graph" live>
+          <ProductWindow url="linkcloud.local/knowledge-graph" live>
             <MiniGraph data={graphData} height={320} />
           </ProductWindow>
         </div>
@@ -375,18 +461,50 @@ const Home = () => {
         </div>
       </HeroCanvas>
 
-      {/* ============== Bento Grid (Capabilities) ============== */}
-      <ContentArea>
-        <SectionTitle>
-          <h2>Three layers, one product</h2>
-          <span>分布式存储 · AI 文件理解 · 双向链接图谱 — 共同构成你的知识资产</span>
-        </SectionTitle>
-        <Bento />
+        {/* ============== Product Entrances ============== */}
+        <ContentArea>
+          <SectionTitle>
+          <h2>Knowledge Cloud</h2>
+          <span>核心入口只保留真实业务链路：存储、理解、检索、双链</span>
+          </SectionTitle>
+        <ProductGrid>
+          <EntryCard>
+            <span className="kicker">AI WIKI / BI-LINK</span>
+            <h3>从最近文件进入 Wiki，把孤立文件变成可回溯节点。</h3>
+            <p>
+              AI 摘要、标签、概念链接与反向链接统一沉淀到 Wiki 详情页。
+              图谱页用于查看跨文件关系，文件页用于补齐上传、分享、下载等操作。
+            </p>
+            <div className="actions">
+              <Button type="primary" icon={<NodeIndexOutlined />} onClick={() => nav('/graph')}>打开知识图谱</Button>
+              <Button icon={<ApiOutlined />} onClick={() => nav('/knowledge')}>查看 AI Wiki</Button>
+            </div>
+          </EntryCard>
+
+          <StatusCard id="system-status">
+            <PanelHeader style={{ padding: 0, borderBottom: 'none' }}>
+              <h3>系统状态</h3>
+              <span className="subtitle">存储节点与索引状态</span>
+            </PanelHeader>
+            <div className="row">
+              <div><div className="label">存储节点</div><div className="hint">FastDFS group · metadata ready</div></div>
+              <div className="value">ONLINE</div>
+            </div>
+            <div className="row">
+              <div><div className="label">AI 索引</div><div className="hint">已索引 / 待处理文件</div></div>
+              <div className="value">{metrics[2]?.value}/{metrics[4]?.value}</div>
+            </div>
+            <div className="row">
+              <div><div className="label">双链图谱</div><div className="hint">节点与边来自文件解析结果</div></div>
+              <div className="value">{graphData.nodes.length}/{graphData.links.length}</div>
+            </div>
+          </StatusCard>
+        </ProductGrid>
 
         {/* ============== Workspace ============== */}
         <SectionTitle style={{ marginTop: 48 }}>
           <h2>Workspace</h2>
-          <span>上传文件即进入 AI 流水线，状态实时回流</span>
+          <span>上传 / 最近节点 / AI 处理队列是首页的主要工作区</span>
         </SectionTitle>
         <Cols>
           <div>
@@ -394,10 +512,10 @@ const Home = () => {
             <div style={{ height: 16 }} />
             <Panel>
               <PanelHeader>
-                <h3>Recent Knowledge Nodes</h3>
+              <h3>最近知识节点</h3>
                 <span className="right">
                   <Button type="text" size="small" onClick={() => nav('/knowledge')}>
-                    View all <ArrowRightOutlined />
+                    查看全部 <ArrowRightOutlined />
                   </Button>
                 </span>
               </PanelHeader>
@@ -407,7 +525,7 @@ const Home = () => {
 
           <Panel>
             <PanelHeader>
-              <h3>AI Pipeline</h3>
+              <h3>AI 处理流水线</h3>
               <span className="subtitle">最近的处理状态</span>
             </PanelHeader>
             <AIPipeline items={aiQueue} />

@@ -5,7 +5,7 @@ import Logo from './Logo';
 
 /**
  * HeroCanvas
- * Base44 / jellistudio 风格的 pastel gradient 大画布
+ * 克制的知识云产品画布
  * - 圆角 28px、占满内容区
  * - 顶部内置 floating pill nav
  * - 子组件分两栏（左 hero 文案 / 右 mockup）
@@ -23,15 +23,14 @@ const Canvas = styled.section`
   box-shadow: ${p => p.theme.shadow.float};
   isolation: isolate;
 
-  /* 三层 pastel radial gradient 叠出空灵感 */
   &::before {
     content: '';
     position: absolute; inset: 0;
     background:
-      radial-gradient(ellipse 60% 80% at 12% 18%, ${p => p.theme.colors.pastelLavender} 0%, transparent 60%),
-      radial-gradient(ellipse 70% 60% at 88% 80%, ${p => p.theme.colors.pastelPeach} 0%, transparent 65%),
-      radial-gradient(ellipse 50% 50% at 70% 8%, ${p => p.theme.colors.pastelMint} 0%, transparent 60%),
-      radial-gradient(ellipse 40% 40% at 18% 92%, ${p => p.theme.colors.pastelIce} 0%, transparent 55%);
+      radial-gradient(ellipse 60% 80% at 12% 18%, ${p => p.theme.colors.canvasMoss} 0%, transparent 60%),
+      radial-gradient(ellipse 70% 60% at 88% 80%, ${p => p.theme.colors.canvasAmber} 0%, transparent 65%),
+      radial-gradient(ellipse 50% 50% at 70% 8%, ${p => p.theme.colors.canvasCream} 0%, transparent 60%),
+      radial-gradient(ellipse 40% 40% at 18% 92%, ${p => p.theme.colors.canvasUmber} 0%, transparent 55%);
     z-index: -2;
   }
   /* 极淡的网格让画布有"产品 mockup canvas"质感 */
@@ -188,10 +187,10 @@ const Window = styled.div`
 `;
 
 const NAV_ITEMS = [
-  { to: '/files',     label: '文件' },
-  { to: '/knowledge', label: 'AI 洞察' },
+  { to: '/files',     label: '文件管理' },
+  { to: '/knowledge', label: 'AI Wiki' },
   { to: '/graph',     label: '知识图谱' },
-  { to: '/shared',    label: '分享' },
+  { to: '/shared',    label: '分享管理' },
 ];
 
 export const HeroCanvas = ({ children }) => (

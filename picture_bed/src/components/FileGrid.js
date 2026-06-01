@@ -1,7 +1,7 @@
 import React from 'react';
 import styled from '@emotion/styled';
 import {
-  FileOutlined, FilePdfOutlined, FileWordOutlined, FileExcelOutlined,
+  FilePdfOutlined, FileWordOutlined, FileExcelOutlined,
   FileZipOutlined, FileTextOutlined, FileImageOutlined, FilePptOutlined,
   CodeOutlined, PlaySquareOutlined, CustomerServiceOutlined,
 } from '@ant-design/icons';
@@ -65,8 +65,8 @@ const Card = styled.div`
 
 const TYPE_ICON = {
   pdf:  { icon: <FilePdfOutlined />,   color: '#DC2626' },
-  doc:  { icon: <FileWordOutlined />,  color: '#2563EB' },
-  docx: { icon: <FileWordOutlined />,  color: '#2563EB' },
+  doc:  { icon: <FileWordOutlined />,  color: '#8B6F37' },
+  docx: { icon: <FileWordOutlined />,  color: '#8B6F37' },
   xls:  { icon: <FileExcelOutlined />, color: '#059669' },
   xlsx: { icon: <FileExcelOutlined />, color: '#059669' },
   ppt:  { icon: <FilePptOutlined />,   color: '#D97706' },
@@ -76,18 +76,18 @@ const TYPE_ICON = {
   '7z': { icon: <FileZipOutlined />,   color: '#D97706' },
   tar:  { icon: <FileZipOutlined />,   color: '#D97706' },
   gz:   { icon: <FileZipOutlined />,   color: '#D97706' },
-  txt:  { icon: <FileTextOutlined />,  color: '#64748B' },
-  md:   { icon: <FileTextOutlined />,  color: '#64748B' },
-  log:  { icon: <FileTextOutlined />,  color: '#64748B' },
-  c:    { icon: <CodeOutlined />,      color: '#A855F7' },
-  cpp:  { icon: <CodeOutlined />,      color: '#A855F7' },
-  h:    { icon: <CodeOutlined />,      color: '#A855F7' },
+  txt:  { icon: <FileTextOutlined />,  color: '#7B725E' },
+  md:   { icon: <FileTextOutlined />,  color: '#7B725E' },
+  log:  { icon: <FileTextOutlined />,  color: '#7B725E' },
+  c:    { icon: <CodeOutlined />,      color: '#B75C43' },
+  cpp:  { icon: <CodeOutlined />,      color: '#B75C43' },
+  h:    { icon: <CodeOutlined />,      color: '#B75C43' },
   js:   { icon: <CodeOutlined />,      color: '#F59E0B' },
-  ts:   { icon: <CodeOutlined />,      color: '#3B82F6' },
+  ts:   { icon: <CodeOutlined />,      color: '#B86F18' },
   py:   { icon: <CodeOutlined />,      color: '#22C55E' },
-  go:   { icon: <CodeOutlined />,      color: '#06B6D4' },
-  mp4:  { icon: <PlaySquareOutlined />,color: '#DB2777' },
-  mp3:  { icon: <CustomerServiceOutlined />, color: '#0EA5E9' },
+  go:   { icon: <CodeOutlined />,      color: '#5F7A45' },
+  mp4:  { icon: <PlaySquareOutlined />,color: '#A84935' },
+  mp3:  { icon: <CustomerServiceOutlined />, color: '#9A6426' },
 };
 
 const isImg = (t) => t && ['png','jpg','jpeg','gif','bmp','webp','svg'].includes(String(t).toLowerCase());
@@ -117,8 +117,8 @@ const FileGrid = ({ files = [], onPick }) => (
             <div className="meta">
               <span>{(ext || classifyFileType(ext)).toUpperCase()} · {formatBytes(f.size)}</span>
               <span className="badges">
-                {f.share_status === 1 && <Tag color="blue" bordered={false} style={{ margin: 0, fontSize: 10 }}>S</Tag>}
-                {f.wiki_ready === 1 && <Tag color="purple" bordered={false} style={{ margin: 0, fontSize: 10 }}>W</Tag>}
+                {f.share_status === 1 && <Tag className="warm-tag" bordered={false} style={{ margin: 0, fontSize: 10 }}>S</Tag>}
+                {f.wiki_ready === 1 && <Tag className="semantic-tag" bordered={false} style={{ margin: 0, fontSize: 10 }}>W</Tag>}
               </span>
             </div>
           </div>
