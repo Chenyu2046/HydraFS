@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "mode": "small",
+  "profile": "fastcgi-react-docker",
+  "status": "INIT",
+  "current_gate": null,
+  "approved_gates": [],
+  "created_by": "Auto_AICoding_Harness-adapted",
+  "task_id": "init-small",
+  "task_title": "Initialize harness in small mode",
+  "updated_at": "2026-06-10T16:40:00+08:00"
+}
