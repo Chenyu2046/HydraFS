@@ -21,6 +21,7 @@ directly and report them explicitly.
 | `picture_bed/src/services/` API or upload logic | `scripts/ai_test.sh` | Also run `cd picture_bed && npm run build` and review affected backend routes |
 | `src_cgi/`, `common/`, `include/` backend logic | `scripts/ai_check.sh` | Also run `scripts/ai_build.sh` or an equivalent backend-capable build path |
 | `docker/*.yaml`, Dockerfiles, startup scripts, Nginx config | `scripts/ai_check.sh` | Also run `scripts/ai_build.sh` |
+| performance-sensitive upload tuning or concurrency changes | `scripts/ai_test.sh` plus `docs/ai/performance.md` review | Also run fixed-window vs AIMD benchmark and record throughput / retry deltas |
 | upload, share, AI search, or other cross-stack workflows | `scripts/ai_check.sh` plus targeted docs review | Also run `scripts/ai_build.sh` and a manual flow from `test-cases-slice1.md`, `chunked_upload.md`, or `ai_search.md` |
 | repo workflow files such as `AGENTS.md`, `docs/ai/*`, `.ai/*`, `scripts/ai_*` | `scripts/ai_check.sh` | Also inspect the generated guidance for consistency with current repo facts |
 

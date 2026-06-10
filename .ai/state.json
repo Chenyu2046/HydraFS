@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
-  "mode": "small",
+  "mode": "large",
   "profile": "fastcgi-react-docker",
-  "status": "INIT",
-  "current_gate": null,
+  "status": "WAITING_HUMAN_FINAL_APPROVAL",
+  "current_gate": "final",
   "approved_gates": [],
   "created_by": "Auto_AICoding_Harness-adapted",
-  "task_id": "init-small",
-  "task_title": "Initialize harness in small mode",
-  "updated_at": "2026-06-10T16:40:00+08:00"
+  "task_id": "20260610-aimd-large-mode",
+  "task_title": "AIMD adaptive chunk upload large-mode delivery",
+  "updated_at": "2026-06-10T17:10:00+08:00"
 }

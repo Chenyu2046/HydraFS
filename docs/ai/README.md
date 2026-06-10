@@ -10,6 +10,7 @@ notes.
 
 - `architecture.md`: container topology, code ownership, and key boundaries
 - `build.md`: real build and deploy entrypoints for this repository
+- `performance.md`: benchmark rules and KPI interpretation for upload changes
 - `testing.md`: automated and manual verification paths that actually exist
 - `verification-matrix.md`: map change risk to minimum checks
 
@@ -30,6 +31,8 @@ references when updating `docs/ai/*`:
 - FastCGI C/C++ logic: `architecture.md`, `testing.md`,
   `verification-matrix.md`
 - React UI or API glue: `build.md`, `testing.md`, `verification-matrix.md`
+- performance-sensitive upload work: `performance.md`, `testing.md`,
+  `verification-matrix.md`
 - Cross-stack features such as upload, share, or AI search: read all files in
   this directory and the relevant root design documents first
 
