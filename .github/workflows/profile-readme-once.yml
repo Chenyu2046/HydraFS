@@ -1,0 +1,55 @@
+name: Profile README polish (one-shot)
+
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/profile-readme-once.yml']
+
+permissions:
+  contents: write
+
+jobs:
+  polish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Insert engineering snapshot
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path('README.md')
+          text = p.read_text(encoding='utf-8')
+          start = '<!-- profile-intro:start -->'
+          end = '<!-- profile-intro:end -->'
+          block = '''<!-- profile-intro:start -->
+
+> **工程概览** — 面向私有云文件管理场景的 C/C++ 存储平台，以 FastCGI + Nginx + FastDFS 构建核心文件链路，并结合 MySQL、Redis 与 Docker 完成服务化部署；在传统上传/下载能力之上加入分片续传、秒传去重和 AI 语义检索。
+
+**Engineering Highlights**
+- **Storage pipeline**：FastDFS 文件存储 + Nginx/FastCGI 请求链路，支持上传、下载、分享与大文件分片合并。
+- **Data & performance**：MySQL 持久化、Redis 缓存、MD5 去重秒传，降低重复存储与传输开销。
+- **AI search**：基于向量索引与大模型能力实现自然语言文件检索及图片内容理解。
+- **Deployment**：Docker Compose 编排应用、数据库和存储服务，形成可复现的一体化运行环境。
+
+`C/C++` · `FastCGI` · `Nginx` · `FastDFS` · `MySQL` · `Redis` · `Docker` · `FAISS`
+
+<!-- profile-intro:end -->'''
+          if start in text and end in text:
+              a = text.index(start); b = text.index(end, a) + len(end)
+              text = text[:a] + block + text[b:]
+          else:
+              lines = text.splitlines(keepends=True)
+              idx = next((i + 1 for i, line in enumerate(lines) if line.startswith('# ')), 0)
+              lines.insert(idx, '\n' + block + '\n\n')
+              text = ''.join(lines)
+          p.write_text(text, encoding='utf-8')
+      - name: Commit README and remove one-shot workflow
+        run: |
+          rm .github/workflows/profile-readme-once.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add README.md .github/workflows/profile-readme-once.yml
+          git commit -m "docs: polish project introduction"
+          git push origin main
