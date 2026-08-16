@@ -1,0 +1,206 @@
+{
+  "generatedAt": "2026-08-13T04:29:23.828Z",
+  "baseUrl": "https://127.0.0.1",
+  "workload": {
+    "trials": 2,
+    "chunks": 96,
+    "chunkMiB": 10,
+    "timeoutMs": 30000
+  },
+  "results": {
+    "fixed": [
+      {
+        "mode": "fixed",
+        "trial": 1,
+        "fileMiB": 960,
+        "chunks": 96,
+        "durationMs": 11046.06,
+        "throughputMiBps": 86.91,
+        "chunkRttMs": {
+          "p50": 721.92,
+          "p95": 1035.66,
+          "p99": 1253.72
+        },
+        "retries": 0,
+        "timeouts": 0,
+        "attempts": 96,
+        "retransmissionRatePct": 0,
+        "maxInFlight": 8,
+        "peakWindow": 8,
+        "containerPeak": {
+          "tc_fcgi_app": {
+            "cpuPct": 135.18,
+            "memoryMiB": 148.2
+          },
+          "tc_fcgi_nginx_fastdfs": {
+            "cpuPct": 95.24,
+            "memoryMiB": 58.18
+          },
+          "tc_fcgi_mysql": {
+            "cpuPct": 3.74,
+            "memoryMiB": 459.1
+          }
+        }
+      },
+      {
+        "mode": "fixed",
+        "trial": 2,
+        "fileMiB": 960,
+        "chunks": 96,
+        "durationMs": 13268.45,
+        "throughputMiBps": 72.35,
+        "chunkRttMs": {
+          "p50": 647.09,
+          "p95": 966.16,
+          "p99": 1170.6
+        },
+        "retries": 0,
+        "timeouts": 0,
+        "attempts": 96,
+        "retransmissionRatePct": 0,
+        "maxInFlight": 8,
+        "peakWindow": 8,
+        "containerPeak": {
+          "tc_fcgi_app": {
+            "cpuPct": 77.07,
+            "memoryMiB": 151.3
+          },
+          "tc_fcgi_nginx_fastdfs": {
+            "cpuPct": 115.06,
+            "memoryMiB": 81.22
+          },
+          "tc_fcgi_mysql": {
+            "cpuPct": 1.3,
+            "memoryMiB": 459.1
+          }
+        }
+      }
+    ],
+    "aimd": [
+      {
+        "mode": "aimd",
+        "trial": 1,
+        "fileMiB": 960,
+        "chunks": 96,
+        "durationMs": 11189.12,
+        "throughputMiBps": 85.8,
+        "chunkRttMs": {
+          "p50": 2220.14,
+          "p95": 3139.93,
+          "p99": 3209.78
+        },
+        "retries": 0,
+        "timeouts": 0,
+        "attempts": 96,
+        "retransmissionRatePct": 0,
+        "maxInFlight": 32,
+        "peakWindow": 32,
+        "containerPeak": {
+          "tc_fcgi_app": {
+            "cpuPct": 158.77,
+            "memoryMiB": 154.1
+          },
+          "tc_fcgi_nginx_fastdfs": {
+            "cpuPct": 123.62,
+            "memoryMiB": 95.28
+          },
+          "tc_fcgi_mysql": {
+            "cpuPct": 2.54,
+            "memoryMiB": 459.9
+          }
+        }
+      },
+      {
+        "mode": "aimd",
+        "trial": 2,
+        "fileMiB": 960,
+        "chunks": 96,
+        "durationMs": 11720.16,
+        "throughputMiBps": 81.91,
+        "chunkRttMs": {
+          "p50": 2578.29,
+          "p95": 3182.57,
+          "p99": 3312.13
+        },
+        "retries": 0,
+        "timeouts": 0,
+        "attempts": 96,
+        "retransmissionRatePct": 0,
+        "maxInFlight": 32,
+        "peakWindow": 32,
+        "containerPeak": {
+          "tc_fcgi_app": {
+            "cpuPct": 145.58,
+            "memoryMiB": 142.7
+          },
+          "tc_fcgi_nginx_fastdfs": {
+            "cpuPct": 125.16,
+            "memoryMiB": 99.37
+          },
+          "tc_fcgi_mysql": {
+            "cpuPct": 10.13,
+            "memoryMiB": 461.9
+          }
+        }
+      }
+    ]
+  },
+  "summary": {
+    "fixed": {
+      "mode": "fixed",
+      "trials": 2,
+      "throughputMiBps": 72.35,
+      "durationMs": 11046.06,
+      "p50ChunkRttMs": 647.09,
+      "p95ChunkRttMs": 966.16,
+      "p99ChunkRttMs": 1170.6,
+      "retries": 0,
+      "timeouts": 0,
+      "retransmissionRatePct": 0,
+      "maxInFlight": 8,
+      "peakWindow": 8,
+      "containerPeak": {
+        "tc_fcgi_app": {
+          "cpuPct": 135.18,
+          "memoryMiB": 151.3
+        },
+        "tc_fcgi_nginx_fastdfs": {
+          "cpuPct": 115.06,
+          "memoryMiB": 81.22
+        },
+        "tc_fcgi_mysql": {
+          "cpuPct": 3.74,
+          "memoryMiB": 459.1
+        }
+      }
+    },
+    "aimd": {
+      "mode": "aimd",
+      "trials": 2,
+      "throughputMiBps": 81.91,
+      "durationMs": 11189.12,
+      "p50ChunkRttMs": 2220.14,
+      "p95ChunkRttMs": 3139.93,
+      "p99ChunkRttMs": 3209.78,
+      "retries": 0,
+      "timeouts": 0,
+      "retransmissionRatePct": 0,
+      "maxInFlight": 32,
+      "peakWindow": 32,
+      "containerPeak": {
+        "tc_fcgi_app": {
+          "cpuPct": 158.77,
+          "memoryMiB": 154.1
+        },
+        "tc_fcgi_nginx_fastdfs": {
+          "cpuPct": 125.16,
+          "memoryMiB": 99.37
+        },
+        "tc_fcgi_mysql": {
+          "cpuPct": 10.13,
+          "memoryMiB": 461.9
+        }
+      }
+    }
+  }
+}
