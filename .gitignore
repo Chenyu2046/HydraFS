@@ -23,3 +23,6 @@ Thumbs.db
 *.new
 *.bak
 *.orig
+
+# AI harness runtime backups
+.ai/backups/

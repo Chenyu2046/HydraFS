@@ -7,6 +7,9 @@ echo "Redis 已启动"
 # 等待 Redis 就绪
 sleep 1
 
+# FastDFS 客户端初始化需要其 base_path 在 chunk_merge 启动前存在。
+mkdir -p /fastdfs_data_and_log/client
+
 # 启动 9 个 FastCGI 进程
 echo -n "登录："
 spawn-fcgi -a 0.0.0.0 -p 10000 -f /app/bin_cgi/login
@@ -57,9 +60,6 @@ echo "OK"
 
 # 创建分片临时目录
 mkdir -p /tmp/chunks
-
-# 创建 FastDFS 客户端日志目录
-mkdir -p /fastdfs_data_and_log/client
 
 echo "所有 FastCGI 程序已启动"
 

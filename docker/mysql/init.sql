@@ -158,8 +158,6 @@ CALL safe_add_column('user_file_ai_desc', 'parse_status', 'varchar(32) DEFAULT '
 CALL safe_add_column('user_file_ai_desc', 'error_msg', 'text DEFAULT NULL COMMENT ''解析失败原因''');
 CALL safe_add_column('user_file_ai_desc', 'updated_at', 'datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT ''最后更新时间''');
 
-DROP PROCEDURE IF EXISTS safe_add_column;
-
 -- =============================================
 -- 知识层新增表（双链知识云存储 MVP）
 -- =============================================
@@ -226,3 +224,5 @@ CALL safe_add_column('wiki_link', 'dst_md5', 'varchar(256) DEFAULT NULL COMMENT 
 CALL safe_add_column('wiki_link', 'score', 'float DEFAULT NULL COMMENT ''相似度分数''');
 -- 旧版 dst_name 为 NOT NULL；存量库需放松约束（忽略错误）
 ALTER TABLE `wiki_link` MODIFY COLUMN `dst_name` varchar(255) DEFAULT NULL;
+
+DROP PROCEDURE IF EXISTS safe_add_column;
