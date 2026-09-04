@@ -3,8 +3,9 @@ FROM ubuntu:20.04
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=Asia/Shanghai
 
-RUN sed -i 's/archive.ubuntu.com/mirrors.aliyun.com/g' /etc/apt/sources.list && \
-    sed -i 's/security.ubuntu.com/mirrors.aliyun.com/g' /etc/apt/sources.list
+RUN sed -i 's#http://archive.ubuntu.com/ubuntu#http://mirrors.tuna.tsinghua.edu.cn/ubuntu#g' /etc/apt/sources.list && \
+    sed -i 's#http://security.ubuntu.com/ubuntu#http://mirrors.tuna.tsinghua.edu.cn/ubuntu#g' /etc/apt/sources.list && \
+    printf 'Acquire::Retries "5";\nAcquire::http::Timeout "20";\nAcquire::https::Timeout "20";\nAcquire::http::Pipeline-Depth "0";\n' > /etc/apt/apt.conf.d/99hydra-timeouts
 
 # 安装基础依赖
 RUN apt-get update && apt-get install -y \
@@ -17,6 +18,7 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     libtool \
     libcurl4-openssl-dev \
+    libssl-dev \
     libopenblas-dev \
     liblapack-dev \
     poppler-utils \
@@ -96,6 +98,6 @@ RUN chmod +x /app/start.sh
 # 复制 Docker 版配置文件
 COPY docker/fastcgi_app/cfg.json /app/conf/cfg.json
 
-EXPOSE 10000-10012
+EXPOSE 10000-10012 10020
 
 CMD ["/app/start.sh"]

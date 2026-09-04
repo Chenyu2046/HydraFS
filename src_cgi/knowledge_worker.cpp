@@ -209,6 +209,13 @@ static void build_storage_download_url(const char *db_url, char *out, int out_le
     out[0] = '\0';
     if (!db_url || strlen(db_url) == 0) return;
 
+    if (db_url[0] == '/' && strlen(storage_web_server_ip) > 0 &&
+        strlen(storage_web_server_port) > 0) {
+        snprintf(out, out_len, "http://%s:%s%s", storage_web_server_ip,
+                 storage_web_server_port, db_url);
+        return;
+    }
+
     const char *path_part = strstr(db_url, "/group");
     if (!path_part && strncmp(db_url, "group", 5) == 0) path_part = db_url;
     if (path_part && strlen(storage_web_server_ip) > 0 &&

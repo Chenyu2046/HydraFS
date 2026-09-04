@@ -1,0 +1,71 @@
+#ifndef HYDRASTORE_METADATA_STORE_H
+#define HYDRASTORE_METADATA_STORE_H
+
+#include "storage_types.h"
+
+#include <mysql/mysql.h>
+
+#include <cstdint>
+#include <string>
+#include <vector>
+
+namespace hydrastore {
+
+struct GcCandidate {
+    std::int64_t id = 0;
+    std::string backend_file_id;
+};
+
+class MetadataStore {
+public:
+    MetadataStore(const std::string &host, unsigned int port,
+                  const std::string &user, const std::string &password,
+                  const std::string &database);
+    ~MetadataStore();
+
+    bool InitOrResume(const std::string &upload_id, const std::string &user,
+                      const std::string &filename, std::int64_t object_size,
+                      const std::string &content_digest,
+                      const std::vector<PartSpec> &parts,
+                      UploadSession *session, std::vector<PartStatus> *statuses);
+    bool GetSession(const std::string &upload_id, const std::string &user,
+                    UploadSession *session);
+    bool MarkPartReady(const std::string &upload_id, int part_index,
+                       const std::string &owner_upload_id,
+                       const std::string &backend_file_id);
+    bool CanUploadPart(const std::string &upload_id, int part_index);
+    bool MarkPartFailed(const std::string &upload_id, int part_index,
+                        const std::string &owner_upload_id);
+    bool Commit(const std::string &upload_id, const std::string &user,
+                UploadSession *session);
+    bool Abort(const std::string &upload_id, const std::string &user);
+    bool DeleteObjectForUser(const std::string &object_id, const std::string &user);
+    bool GetManifest(const std::string &object_id, const std::string &user,
+                     UploadSession *session,
+                     std::vector<PartStatus> *parts);
+    bool ReconcileExpiredUploads();
+    bool ClaimGc(std::vector<GcCandidate> *candidates, int limit);
+    bool FinishGc(const GcCandidate &candidate, bool deleted, const std::string &error);
+
+private:
+    bool Exec(const std::string &sql, const std::vector<std::string> &params = {});
+    bool Query(const std::string &sql, const std::vector<std::string> &params,
+               std::vector<std::vector<std::string>> *rows);
+    bool Txn(const char *sql);
+    bool ReadSession(const std::vector<std::string> &row, UploadSession *session) const;
+    bool ReadStatuses(const std::string &upload_id, std::vector<PartStatus> *statuses);
+    long long LastInsertId() const;
+    unsigned long long AffectedRows() const;
+    void Close();
+
+    std::string host_;
+    unsigned int port_;
+    std::string user_;
+    std::string password_;
+    std::string database_;
+    MYSQL *connection_;
+};
+
+}  // namespace hydrastore
+
+#endif

@@ -29,7 +29,9 @@ export const fetchUserImages = async (user, opts = {}) => {
     return (data.files || []).map(file => ({
       ...file,
       name: file.file_name || file.filename,
-      url: file.url ? file.url.replace(API_CONFIG.STORAGE_URL, API_CONFIG.BASE_URL) : '',
+      url: file.storage_mode === 'manifest' && file.object_id
+        ? `${API_CONFIG.BASE_URL}${API_CONFIG.ENDPOINTS.OBJECT_DOWNLOAD}?objectId=${encodeURIComponent(file.object_id)}`
+        : (file.url ? file.url.replace(API_CONFIG.STORAGE_URL, API_CONFIG.BASE_URL) : ''),
       pv: file.pv || 0,
     }));
   }
@@ -120,6 +122,68 @@ const getChunkUploadConfig = () => ({
   ...DEFAULT_CHUNK_UPLOAD_CONFIG,
   ...(API_CONFIG.CHUNK_UPLOAD || {})
 });
+
+// V2 computes the legacy file digest and each CAS digest in one sequential scan.
+const calculateObjectDigests = async (file, chunkSize) => {
+  if (!window.crypto || !window.crypto.subtle) {
+    throw new Error('当前浏览器不支持 SHA-256');
+  }
+  return new Promise((resolve, reject) => {
+    const scanSize = 2 * 1024 * 1024;
+    const chunks = Math.ceil(file.size / scanSize);
+    const reader = new FileReader();
+    const spark = new SparkMD5.ArrayBuffer();
+    const partBuffers = [];
+    const parts = [];
+    let currentChunk = 0;
+    let currentPart = 0;
+    let currentPartSize = 0;
+
+    const finishPart = async () => {
+      if (currentPartSize === 0) return;
+      const bytes = new Uint8Array(currentPartSize);
+      let offset = 0;
+      partBuffers.forEach(buffer => {
+        bytes.set(new Uint8Array(buffer), offset);
+        offset += buffer.byteLength;
+      });
+      const digest = await window.crypto.subtle.digest('SHA-256', bytes);
+      const hash = Array.from(new Uint8Array(digest))
+        .map(value => value.toString(16).padStart(2, '0')).join('');
+      parts.push({ index: currentPart, size: currentPartSize, sha256: hash });
+      currentPart++;
+      currentPartSize = 0;
+      partBuffers.length = 0;
+    };
+
+    reader.onerror = reject;
+    reader.onload = async event => {
+      try {
+        const buffer = event.target.result;
+        spark.append(buffer);
+        partBuffers.push(buffer);
+        currentPartSize += buffer.byteLength;
+        currentChunk++;
+        if (currentPartSize === chunkSize || currentChunk === chunks) {
+          await finishPart();
+        }
+        if (currentChunk < chunks) {
+          const start = currentChunk * scanSize;
+          reader.readAsArrayBuffer(file.slice(start, Math.min(start + scanSize, file.size)));
+        } else {
+          resolve({ contentDigest: spark.end(), parts });
+        }
+      } catch (error) {
+        reject(error);
+      }
+    };
+    if (file.size === 0) {
+      resolve({ contentDigest: spark.end(), parts: [] });
+    } else {
+      reader.readAsArrayBuffer(file.slice(0, Math.min(scanSize, file.size)));
+    }
+  });
+};
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 
@@ -213,11 +277,11 @@ const createAimdWindow = (config) => {
   };
 };
 
-const uploadChunkWithRetry = async ({ file, chunkSize, md5, index, config, aimdWindow, abortSignal }) => {
+const uploadChunkWithRetry = async ({ file, chunkSize, md5, index, config, aimdWindow, abortSignal, uploadUrl: suppliedUrl, uploadHeaders }) => {
   const start = index * chunkSize;
   const end = Math.min(start + chunkSize, file.size);
   const chunk = file.slice(start, end);
-  const uploadUrl = `${API_CONFIG.BASE_URL}${API_CONFIG.ENDPOINTS.CHUNK_UPLOAD}?md5=${encodeURIComponent(md5)}&index=${index}`;
+  const uploadUrl = suppliedUrl || `${API_CONFIG.BASE_URL}${API_CONFIG.ENDPOINTS.CHUNK_UPLOAD}?md5=${encodeURIComponent(md5)}&index=${index}`;
   let lastError;
 
   for (let attempt = 0; attempt <= config.MAX_RETRIES; attempt++) {
@@ -231,7 +295,7 @@ const uploadChunkWithRetry = async ({ file, chunkSize, md5, index, config, aimdW
     try {
       const uploadRes = await fetch(uploadUrl, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/octet-stream' },
+        headers: { 'Content-Type': 'application/octet-stream', ...(uploadHeaders || {}) },
         body: chunk,
         signal: timeout.signal
       });
@@ -261,7 +325,7 @@ const uploadChunkWithRetry = async ({ file, chunkSize, md5, index, config, aimdW
   throw lastError || new Error(`分片 ${index} 上传失败`);
 };
 
-const uploadChunksWithAimd = async ({ file, md5, chunkSize, chunkCount, uploadedSet, onProgress }) => {
+const uploadChunksWithAimd = async ({ file, md5, chunkSize, chunkCount, uploadedSet, onProgress, uploadUrlForIndex, uploadHeaders }) => {
   const config = getChunkUploadConfig();
   const aimdWindow = createAimdWindow(config);
   const pending = [];
@@ -312,7 +376,9 @@ const uploadChunksWithAimd = async ({ file, md5, chunkSize, chunkCount, uploaded
         index: chunkIndex,
         config,
         aimdWindow,
-        abortSignal: uploadController.signal
+        abortSignal: uploadController.signal,
+        uploadUrl: uploadUrlForIndex ? uploadUrlForIndex(chunkIndex) : undefined,
+        uploadHeaders
       })
         .then(finishChunk)
         .catch(rejectAndAbort)
@@ -345,11 +411,59 @@ const uploadChunksWithAimd = async ({ file, md5, chunkSize, chunkCount, uploaded
   });
 };
 
+const objectRequest = async (endpoint, user, body) => {
+  const response = await fetch(`${API_CONFIG.BASE_URL}${endpoint}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...body, user: user.username, token: user.token })
+  });
+  const data = await response.json();
+  if (data.code === 4) throw makeTokenExpiredError();
+  if (data.code !== 0) throw new Error(data.msg || '对象存储请求失败');
+  return data;
+};
+
+const waitForObjectParts = async (user, uploadId) => {
+  for (let attempt = 0; attempt < 30; attempt++) {
+    const data = await objectRequest(API_CONFIG.ENDPOINTS.OBJECT_STATUS, user, { uploadId });
+    if (!data.waitingParts || data.waitingParts.length === 0) return data;
+    await new Promise(resolve => setTimeout(resolve, 500));
+  }
+  throw new Error('等待重复分片超时');
+};
+
+export const uploadObject = async (file, user, onProgress) => {
+  const chunkSize = API_CONFIG.CHUNK_SIZE;
+  const { contentDigest, parts } = await calculateObjectDigests(file, chunkSize);
+  const init = await objectRequest(API_CONFIG.ENDPOINTS.OBJECT_INIT, user, {
+    filename: file.name, md5: contentDigest, contentDigest, size: file.size, parts
+  });
+  if (onProgress) onProgress(0);
+  const missing = new Set(init.missingParts || []);
+  const uploadedSet = new Set(Array.from({ length: parts.length }, (_, index) => index)
+    .filter(index => !missing.has(index)));
+  await uploadChunksWithAimd({
+    file, md5: contentDigest, chunkSize, chunkCount: parts.length, uploadedSet, onProgress,
+    uploadHeaders: { 'X-Upload-User': user.username, 'X-Upload-Token': user.token },
+    uploadUrlForIndex: index => `${API_CONFIG.BASE_URL}${API_CONFIG.ENDPOINTS.OBJECT_PART}`
+      + `?uploadId=${encodeURIComponent(init.uploadId)}&index=${index}&sha256=${parts[index].sha256}`
+  });
+  await waitForObjectParts(user, init.uploadId);
+  const finalStatus = await objectRequest(API_CONFIG.ENDPOINTS.OBJECT_STATUS, user,
+    { uploadId: init.uploadId });
+  if (finalStatus.missingParts && finalStatus.missingParts.length > 0) {
+    throw new Error(`对象仍缺少分片: ${finalStatus.missingParts.join(',')}`);
+  }
+  const committed = await objectRequest(API_CONFIG.ENDPOINTS.OBJECT_COMMIT, user, { uploadId: init.uploadId });
+  if (onProgress) onProgress(100);
+  return { ...committed, instant: false, alreadyExists: false, md5: contentDigest };
+};
+
 // 普通上传（小文件 <= 10MB）
 export const uploadImage = async (file, user, onProgress) => {
   // 大文件自动走分片上传
   if (file.size > API_CONFIG.CHUNK_THRESHOLD) {
-    return uploadChunked(file, user, onProgress);
+    return uploadObject(file, user, onProgress);
   }
 
   const md5 = await calculateMD5(file);
@@ -521,6 +635,9 @@ export const cancelShareFile = async (image, user) => {
 };
 
 export const deleteImage = async (image, user) => {
+  if (image.storage_mode === 'manifest' && image.object_id) {
+    return objectRequest(API_CONFIG.ENDPOINTS.OBJECT_DELETE, user, { objectId: image.object_id });
+  }
   const response = await fetch(`${API_CONFIG.BASE_URL}${API_CONFIG.ENDPOINTS.DEAL_FILE}?cmd=del`, {
     method: 'POST',
     headers: {

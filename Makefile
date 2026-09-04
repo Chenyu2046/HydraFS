@@ -17,7 +17,8 @@ LIBS=-lfdfsclient	\
 	 -lhiredis		\
 	 -lfcgi         \
 	 -lm            \
-	 -lmysqlclient
+	 -lmysqlclient   \
+	 -lcrypto
 # AI 模块额外的动态库
 AI_LIBS=-lfaiss -lcurl -lopenblas -lgomp -lpthread -L/usr/local/lib
 # 目录路径
@@ -45,6 +46,8 @@ chunk_upload=$(CGI_BIN_PATH)/chunk_upload
 chunk_merge=$(CGI_BIN_PATH)/chunk_merge
 ai=$(CGI_BIN_PATH)/ai
 worker=$(CGI_BIN_PATH)/knowledge_worker
+storage_gateway=$(CGI_BIN_PATH)/storage_gateway
+storage_gc_worker=$(CGI_BIN_PATH)/storage_gc_worker
 
 # 最终目标
 target=$(login)		\
@@ -60,7 +63,9 @@ target=$(login)		\
 	   $(chunk_upload) \
 	   $(chunk_merge) \
 	   $(ai) \
-	   $(worker)
+	   $(worker) \
+	   $(storage_gateway) \
+	   $(storage_gc_worker)
 ALL:$(target)
 
 #######################################################################
@@ -231,6 +236,41 @@ $(worker): $(CGI_SRC_PATH)/knowledge_worker.o \
 	   $(COMMON_PATH)/cfg.o \
 	   $(COMMON_PATH)/md5.o
 	$(CXX) $^ -o $@ $(LIBS) $(AI_LIBS)
+
+# HydraStore V2 stateless object gateway
+$(CGI_SRC_PATH)/storage_gateway.o: $(CGI_SRC_PATH)/storage_gateway.cpp
+	$(CXX) -c $< -o $@ $(CXXFLAGS) $(CPPLFAGS)
+
+$(COMMON_PATH)/storage_hash_util.o: $(COMMON_PATH)/storage_hash_util.cpp
+	$(CXX) -c $< -o $@ $(CXXFLAGS) $(CPPLFAGS)
+
+$(COMMON_PATH)/storage_blob_store.o: $(COMMON_PATH)/storage_blob_store.cpp
+	$(CXX) -c $< -o $@ $(CXXFLAGS) $(CPPLFAGS)
+
+$(COMMON_PATH)/storage_metadata_store.o: $(COMMON_PATH)/storage_metadata_store.cpp
+	$(CXX) -c $< -o $@ $(CXXFLAGS) $(CPPLFAGS)
+
+$(storage_gateway): $(CGI_SRC_PATH)/storage_gateway.o \
+	   $(COMMON_PATH)/storage_hash_util.o \
+	   $(COMMON_PATH)/storage_blob_store.o \
+	   $(COMMON_PATH)/storage_metadata_store.o \
+	   $(COMMON_PATH)/make_log.o \
+	   $(COMMON_PATH)/util_cgi.o \
+	   $(COMMON_PATH)/cJSON.o \
+	   $(COMMON_PATH)/redis_op.o \
+	   $(COMMON_PATH)/cfg.o
+	$(CXX) $^ -o $@ $(LIBS)
+
+$(CGI_SRC_PATH)/storage_gc_worker.o: $(CGI_SRC_PATH)/storage_gc_worker.cpp
+	$(CXX) -c $< -o $@ $(CXXFLAGS) $(CPPLFAGS)
+
+$(storage_gc_worker): $(CGI_SRC_PATH)/storage_gc_worker.o \
+	   $(COMMON_PATH)/storage_blob_store.o \
+	   $(COMMON_PATH)/storage_metadata_store.o \
+	   $(COMMON_PATH)/make_log.o \
+	   $(COMMON_PATH)/cJSON.o \
+	   $(COMMON_PATH)/cfg.o
+	$(CXX) $^ -o $@ $(LIBS)
 # =====================================================================
 
 

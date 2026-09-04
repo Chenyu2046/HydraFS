@@ -18,6 +18,10 @@ CREATE TABLE `file_info` (
   `size` bigint(20) DEFAULT '0' COMMENT '文件大小, 以字节为单位',
   `type` varchar(32) DEFAULT '' COMMENT '文件类型： png, zip, mp4……',
   `count` int(11) DEFAULT '0' COMMENT '文件引用计数,默认为1。每增加一个用户拥有此文件，此计数器+1',
+  `storage_mode` varchar(16) NOT NULL DEFAULT 'legacy' COMMENT 'legacy or manifest',
+  `manifest_id` bigint(20) DEFAULT NULL,
+  `object_id` varchar(64) DEFAULT NULL,
+  `content_digest` varchar(256) DEFAULT NULL,
   PRIMARY KEY (`id`),
   UNIQUE KEY `uq_md5` (`md5`(191))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8 COMMENT='文件信息表';
@@ -64,8 +68,88 @@ CREATE TABLE `user_file_list` (
   `file_name` varchar(128) DEFAULT NULL COMMENT '文件名字',
   `shared_status` int(11) DEFAULT NULL COMMENT '共享状态, 0为没有共享， 1为共享',
   `pv` int(11) DEFAULT NULL COMMENT '文件下载量，默认值为0，下载一次加1',
-  PRIMARY KEY (`id`)
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_user_md5_filename` (`user`, `md5`(191), `file_name`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8 COMMENT='用户文件列表';
+
+-- HydraStore V2 durable metadata. FastDFS IDs remain opaque backend values.
+CREATE TABLE IF NOT EXISTS `object_manifest` (
+  `id` bigint(20) NOT NULL AUTO_INCREMENT,
+  `object_id` varchar(64) NOT NULL,
+  `total_size` bigint(20) NOT NULL,
+  `content_digest` varchar(256) NOT NULL,
+  `chunk_count` int(11) NOT NULL DEFAULT '0',
+  `state` varchar(16) NOT NULL DEFAULT 'COMMITTED',
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_object_id` (`object_id`),
+  KEY `idx_manifest_digest` (`content_digest`(191))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='HydraStore ordered object manifest';
+
+CREATE TABLE IF NOT EXISTS `chunk_blob` (
+  `id` bigint(20) NOT NULL AUTO_INCREMENT,
+  `sha256` char(64) NOT NULL,
+  `size` bigint(20) NOT NULL,
+  `backend_file_id` varchar(256) DEFAULT NULL,
+  `state` varchar(16) NOT NULL DEFAULT 'UPLOADING',
+  `ref_count` bigint(20) NOT NULL DEFAULT '0',
+  `owner_upload_id` varchar(64) DEFAULT NULL,
+  `lease_until` datetime DEFAULT NULL,
+  `gc_after` datetime DEFAULT NULL,
+  `retry_count` int(11) NOT NULL DEFAULT '0',
+  `next_retry_at` datetime DEFAULT NULL,
+  `last_error` varchar(512) DEFAULT NULL,
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_chunk_digest_size` (`sha256`,`size`),
+  KEY `idx_chunk_gc` (`state`,`ref_count`,`gc_after`,`next_retry_at`),
+  KEY `idx_chunk_owner` (`owner_upload_id`,`lease_until`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='HydraStore immutable CAS chunk';
+
+CREATE TABLE IF NOT EXISTS `manifest_chunk` (
+  `manifest_id` bigint(20) NOT NULL,
+  `part_index` int(11) NOT NULL,
+  `chunk_id` bigint(20) NOT NULL,
+  `size` bigint(20) NOT NULL,
+  PRIMARY KEY (`manifest_id`,`part_index`),
+  KEY `idx_manifest_chunk_blob` (`chunk_id`),
+  CONSTRAINT `fk_manifest_chunk_manifest` FOREIGN KEY (`manifest_id`) REFERENCES `object_manifest` (`id`),
+  CONSTRAINT `fk_manifest_chunk_blob` FOREIGN KEY (`chunk_id`) REFERENCES `chunk_blob` (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='HydraStore ordered manifest references';
+
+CREATE TABLE IF NOT EXISTS `upload_session` (
+  `id` varchar(64) NOT NULL,
+  `user` varchar(32) NOT NULL,
+  `filename` varchar(255) NOT NULL,
+  `size` bigint(20) NOT NULL,
+  `content_digest` varchar(256) NOT NULL,
+  `chunk_count` int(11) NOT NULL,
+  `state` varchar(16) NOT NULL DEFAULT 'INIT',
+  `object_id` varchar(64) DEFAULT NULL,
+  `manifest_id` bigint(20) DEFAULT NULL,
+  `expires_at` datetime NOT NULL DEFAULT (CURRENT_TIMESTAMP + INTERVAL 24 HOUR),
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_upload_user_digest` (`user`,`content_digest`(191)),
+  KEY `idx_upload_expiry` (`state`,`expires_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='HydraStore durable upload session';
+
+CREATE TABLE IF NOT EXISTS `upload_part` (
+  `upload_id` varchar(64) NOT NULL,
+  `part_index` int(11) NOT NULL,
+  `size` bigint(20) NOT NULL,
+  `sha256` char(64) NOT NULL,
+  `chunk_id` bigint(20) DEFAULT NULL,
+  `state` varchar(16) NOT NULL DEFAULT 'MISSING',
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`upload_id`,`part_index`),
+  KEY `idx_upload_part_chunk` (`chunk_id`),
+  CONSTRAINT `fk_upload_part_session` FOREIGN KEY (`upload_id`) REFERENCES `upload_session` (`id`),
+  CONSTRAINT `fk_upload_part_blob` FOREIGN KEY (`chunk_id`) REFERENCES `chunk_blob` (`id`) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='HydraStore upload part declarations';
 
 DROP TABLE IF EXISTS `user_info`;
 CREATE TABLE `user_info` (

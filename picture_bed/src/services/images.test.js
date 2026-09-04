@@ -1,5 +1,5 @@
 import { API_CONFIG } from '../config';
-import { uploadChunked } from './images';
+import { uploadChunked, uploadImage } from './images';
 
 jest.mock('spark-md5', () => ({
   __esModule: true,
@@ -45,11 +45,13 @@ const flushPromises = async () => {
 
 describe('uploadChunked AIMD scheduler', () => {
   const originalChunkSize = API_CONFIG.CHUNK_SIZE;
+  const originalChunkThreshold = API_CONFIG.CHUNK_THRESHOLD;
   const originalChunkUpload = API_CONFIG.CHUNK_UPLOAD;
 
   beforeEach(() => {
     global.FileReader = MockFileReader;
     API_CONFIG.CHUNK_SIZE = 1;
+    API_CONFIG.CHUNK_THRESHOLD = 10 * 1024 * 1024;
     API_CONFIG.CHUNK_UPLOAD = {
       INITIAL_CONCURRENCY: 4,
       MIN_CONCURRENCY: 4,
@@ -63,6 +65,7 @@ describe('uploadChunked AIMD scheduler', () => {
   afterEach(() => {
     jest.useRealTimers();
     API_CONFIG.CHUNK_SIZE = originalChunkSize;
+    API_CONFIG.CHUNK_THRESHOLD = originalChunkThreshold;
     API_CONFIG.CHUNK_UPLOAD = originalChunkUpload;
     delete global.fetch;
   });
@@ -306,5 +309,47 @@ describe('uploadChunked AIMD scheduler', () => {
     chunkRequests.get(3).resolve(jsonResponse({ code: 0 }));
     await expect(uploadPromise).resolves.toMatchObject({ instant: false, alreadyExists: false });
     expect(mergeCalled).toBe(true);
+  });
+
+  test('new large-file path sends ordered SHA-256 parts and commits an object', async () => {
+    class ObjectFileReader {
+      readAsArrayBuffer() {
+        this.onload({ target: { result: new ArrayBuffer(2 * 1024 * 1024) } });
+      }
+    }
+    global.FileReader = ObjectFileReader;
+    window.crypto = {
+      subtle: {
+        digest: jest.fn(async () => new Uint8Array(32).fill(0xab).buffer)
+      }
+    };
+    API_CONFIG.CHUNK_SIZE = 2 * 1024 * 1024;
+    API_CONFIG.CHUNK_THRESHOLD = 1;
+    const calls = [];
+    global.fetch = jest.fn((url, options = {}) => {
+      calls.push({ url, options });
+      if (url === '/api/object/init') {
+        return Promise.resolve(jsonResponse({ code: 0, uploadId: 'upload-1', missingParts: [0, 1], waitingParts: [] }));
+      }
+      if (url.startsWith('/api/object/part')) {
+        return Promise.resolve(jsonResponse({ code: 0 }));
+      }
+      if (url === '/api/object/status') {
+        return Promise.resolve(jsonResponse({ code: 0, waitingParts: [], missingParts: [] }));
+      }
+      if (url === '/api/object/commit') {
+        return Promise.resolve(jsonResponse({ code: 0, objectId: 'object-1', storageMode: 'manifest' }));
+      }
+      throw new Error(`unexpected url ${url}`);
+    });
+
+    const result = await uploadImage(makeFile(4 * 1024 * 1024), { username: 'u', token: 't' });
+
+    expect(result).toMatchObject({ objectId: 'object-1', storageMode: 'manifest' });
+    const partCalls = calls.filter(({ url }) => url.startsWith('/api/object/part'));
+    expect(partCalls).toHaveLength(2);
+    expect(partCalls[0].options.headers).toMatchObject({ 'X-Upload-User': 'u', 'X-Upload-Token': 't' });
+    expect(partCalls[0].url).toContain('sha256=' + 'ab'.repeat(32));
+    expect(calls.map(({ url }) => url)).toContain('/api/object/commit');
   });
 });

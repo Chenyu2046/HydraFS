@@ -1,6 +1,19 @@
 version: '3.8'
 
 services:
+  redis:
+    image: redis:7-alpine
+    container_name: tc_fcgi_redis
+    networks:
+      my_net:
+        ipv4_address: 172.30.0.5
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   tc_mysql:
     build:
       context: ./mysql
@@ -57,7 +70,7 @@ services:
     depends_on:
       tc_mysql:
         condition: service_healthy
-      nginx_fastdfs:
+      redis:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "lsof", "-i", ":10000"]
@@ -65,6 +78,102 @@ services:
       timeout: 3s
       retries: 5
       start_period: 10s
+
+  storage_gateway_1:
+    build:
+      context: ..
+      dockerfile: docker/fastcgi_app/dockerfile
+    container_name: tc_hydrastore_gateway_1
+    environment:
+      STORAGE_GATEWAY_ONLY: "1"
+      STORAGE_GATEWAY_WORKERS: "8"
+    networks:
+      my_net:
+        ipv4_address: 172.30.0.6
+    restart: unless-stopped
+    volumes:
+      - ./nginx_fastdfs/client.conf:/etc/fdfs/client.conf
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 2 bash -c '</dev/tcp/127.0.0.1/10020'"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    depends_on:
+      tc_mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  storage_gateway_2:
+    build:
+      context: ..
+      dockerfile: docker/fastcgi_app/dockerfile
+    container_name: tc_hydrastore_gateway_2
+    environment:
+      STORAGE_GATEWAY_ONLY: "1"
+      STORAGE_GATEWAY_WORKERS: "8"
+    networks:
+      my_net:
+        ipv4_address: 172.30.0.7
+    restart: unless-stopped
+    volumes:
+      - ./nginx_fastdfs/client.conf:/etc/fdfs/client.conf
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 2 bash -c '</dev/tcp/127.0.0.1/10020'"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    depends_on:
+      tc_mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  storage_gc_worker:
+    build:
+      context: ..
+      dockerfile: docker/fastcgi_app/dockerfile
+    container_name: tc_hydrastore_gc
+    environment:
+      STORAGE_GC_ONLY: "1"
+    networks:
+      my_net:
+        ipv4_address: 172.30.0.8
+    restart: unless-stopped
+    volumes:
+      - ./nginx_fastdfs/client.conf:/etc/fdfs/client.conf
+    depends_on:
+      tc_mysql:
+        condition: service_healthy
+      nginx_fastdfs:
+        condition: service_healthy
+
+  fastdfs_storage_2:
+    build:
+      context: ..
+      dockerfile: docker/nginx_fastdfs/dockerfile
+    container_name: tc_fastdfs_storage_2
+    command: >-
+      /bin/bash -c "sed 's/group1/group2/g;s#/storage#/storage2#g'
+      /etc/fdfs/storage.conf > /tmp/storage2.conf &&
+      mkdir -p /fastdfs_data_and_log/storage2 &&
+      fdfs_storaged /tmp/storage2.conf start && tail -f /dev/null"
+    networks:
+      my_net:
+        ipv4_address: 172.30.0.9
+    restart: unless-stopped
+    volumes:
+      - fastdfs_data_2:/fastdfs_data_and_log/storage2
+    depends_on:
+      nginx_fastdfs:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "lsof", "-i", ":23000"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
 
 networks:
   my_net:
@@ -77,3 +186,4 @@ networks:
 volumes:
   fastdfs_data:
   mysql_data:
+  fastdfs_data_2:

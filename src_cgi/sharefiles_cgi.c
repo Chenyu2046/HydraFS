@@ -214,7 +214,9 @@ int get_share_filelist(int start, int count)
     mysql_query(conn, "set names utf8");
 
     // sql语句
-    sprintf(sql_cmd, "select share_file_list.*, file_info.url, file_info.size, file_info.type from file_info, share_file_list where file_info.md5 = share_file_list.md5 limit %d, %d", start, count);
+    sprintf(sql_cmd, "select share_file_list.*, file_info.url, file_info.size, file_info.type, "
+            "file_info.storage_mode, file_info.object_id, file_info.manifest_id "
+            "from file_info, share_file_list where file_info.md5 = share_file_list.md5 limit %d, %d", start, count);
 
     LOG(SHAREFILES_LOG_MODULE, SHAREFILES_LOG_PROC, "%s 在操作\n", sql_cmd);
 
@@ -335,6 +337,13 @@ int get_share_filelist(int start, int count)
         {
             cJSON_AddStringToObject(item, "type", row[column_index]);
         }
+
+        column_index++;
+        if (row[column_index] != NULL) cJSON_AddStringToObject(item, "storage_mode", row[column_index]);
+        column_index++;
+        if (row[column_index] != NULL) cJSON_AddStringToObject(item, "object_id", row[column_index]);
+        column_index++;
+        if (row[column_index] != NULL) cJSON_AddNumberToObject(item, "manifest_id", atoll(row[column_index]));
 
         cJSON_AddItemToArray(array, item);
     }

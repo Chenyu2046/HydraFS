@@ -13,6 +13,13 @@ export const API_CONFIG = {
     CHUNK_INIT: '/api/chunk_init',
     CHUNK_UPLOAD: '/api/chunk_upload',
     CHUNK_MERGE: '/api/chunk_merge',
+    OBJECT_INIT: '/api/object/init',
+    OBJECT_PART: '/api/object/part',
+    OBJECT_STATUS: '/api/object/status',
+    OBJECT_COMMIT: '/api/object/commit',
+    OBJECT_ABORT: '/api/object/abort',
+    OBJECT_DELETE: '/api/object/delete',
+    OBJECT_DOWNLOAD: '/api/object/download',
     AI: '/api/ai'
   },
   CHUNK_SIZE: 10 * 1024 * 1024,  // 10MB per chunk

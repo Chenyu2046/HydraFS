@@ -82,3 +82,40 @@ Before completion, state:
 2. how it was verified
 3. what remains unverified and why
 4. what follow-up is needed for each meaningful unverified item
+
+## HydraStore V2 Principles
+
+- The product name is `HydraStore｜高性能分布式对象存储系统`.
+- MySQL is authoritative for upload sessions, manifests, chunk metadata,
+  references, and lifecycle state. Redis is limited to tokens, cache, and
+  ephemeral coordination.
+- New objects use immutable content-addressed chunks plus an ordered manifest;
+  legacy `file_info.file_id` objects remain readable through the legacy path.
+- A physical chunk is published before metadata makes it visible. The
+  database unique key `(sha256, size)`, owner lease, and idempotent state
+  transitions are the concurrency boundary for deduplication.
+- Commit is one metadata transaction. No file is visible before the session is
+  committed, and repeating commit must return the same committed object without
+  incrementing references twice.
+- GC is grace-period based and must lock/check active upload references before
+  moving `GC_PENDING` objects to `DELETING`. Physical deletion is retryable.
+- FastDFS is a BlobStore backend, not the logical object model. New upload and
+  download paths must stream with bounded memory and must not use
+  `/tmp/chunks` or appender merge.
+
+## HydraStore V2 Test Standard
+
+For every claimed behavior, first write a test that would fail if the behavior
+were only happy-path code. Required adversarial cases include concurrent same
+chunk upload, duplicate part retry, duplicate commit, transaction failure,
+stale lease takeover, shared-reference deletion, orphan GC, crash/resume, and
+gateway failover. A passing happy-path request is not completion evidence.
+
+## HydraStore V2 Prohibited Shortcuts
+
+- Do not make Redis the source of truth, add a second custom placement system,
+  or reintroduce whole-file FastDFS appender merge for new objects.
+- Do not claim benchmark numbers, multi-storage distribution, failover, or
+  crash recovery without running the corresponding reproducible test.
+- Do not delete or rewrite legacy data as part of migration. Migrations must be
+  repeatable and additive.

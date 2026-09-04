@@ -310,6 +310,7 @@ int get_user_filelist(char *cmd, char *user, int start, int count)
     {
         // sql语句，LEFT JOIN 知识层表获取解析状态
         sprintf(sql_cmd, "select user_file_list.*, file_info.url, file_info.size, file_info.type, "
+                "file_info.storage_mode, file_info.object_id, file_info.manifest_id, "
                 "COALESCE(uad.parse_status, 'pending') as parse_status, "
                 "CASE WHEN wp.id IS NOT NULL THEN 1 ELSE 0 END as wiki_ready "
                 "from user_file_list "
@@ -321,6 +322,7 @@ int get_user_filelist(char *cmd, char *user, int start, int count)
     else if (strcmp(cmd, "pvasc") == 0) //按下载量升序
     {
         sprintf(sql_cmd, "select user_file_list.*, file_info.url, file_info.size, file_info.type, "
+                "file_info.storage_mode, file_info.object_id, file_info.manifest_id, "
                 "COALESCE(uad.parse_status, 'pending') as parse_status, "
                 "CASE WHEN wp.id IS NOT NULL THEN 1 ELSE 0 END as wiki_ready "
                 "from user_file_list "
@@ -332,6 +334,7 @@ int get_user_filelist(char *cmd, char *user, int start, int count)
     else if (strcmp(cmd, "pvdesc") == 0) //按下载量降序
     {
         sprintf(sql_cmd, "select user_file_list.*, file_info.url, file_info.size, file_info.type, "
+                "file_info.storage_mode, file_info.object_id, file_info.manifest_id, "
                 "COALESCE(uad.parse_status, 'pending') as parse_status, "
                 "CASE WHEN wp.id IS NOT NULL THEN 1 ELSE 0 END as wiki_ready "
                 "from user_file_list "
@@ -462,6 +465,24 @@ int get_user_filelist(char *cmd, char *user, int start, int count)
         if (row[column_index] != NULL)
         {
             cJSON_AddStringToObject(item, "type", row[column_index]);
+        }
+
+        column_index++;
+        if (row[column_index] != NULL)
+        {
+            cJSON_AddStringToObject(item, "storage_mode", row[column_index]);
+        }
+
+        column_index++;
+        if (row[column_index] != NULL)
+        {
+            cJSON_AddStringToObject(item, "object_id", row[column_index]);
+        }
+
+        column_index++;
+        if (row[column_index] != NULL)
+        {
+            cJSON_AddNumberToObject(item, "manifest_id", atoll(row[column_index]));
         }
 
         column_index++;

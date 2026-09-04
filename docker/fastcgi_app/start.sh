@@ -1,14 +1,21 @@
 #!/bin/bash
 
-# 启动 Redis
-redis-server --daemonize yes
-echo "Redis 已启动"
-
-# 等待 Redis 就绪
-sleep 1
-
 # FastDFS 客户端初始化需要其 base_path 在 chunk_merge 启动前存在。
 mkdir -p /fastdfs_data_and_log/client
+
+if [ "${STORAGE_GATEWAY_ONLY:-0}" = "1" ]; then
+    echo -n "HydraStore Gateway："
+    STORAGE_GATEWAY_WORKERS=${STORAGE_GATEWAY_WORKERS:-8}
+    spawn-fcgi -a 0.0.0.0 -p 10020 -F "$STORAGE_GATEWAY_WORKERS" -f /app/bin_cgi/storage_gateway
+    echo "OK"
+    exec tail -f /dev/null
+fi
+
+if [ "${STORAGE_GC_ONLY:-0}" = "1" ]; then
+    echo -n "HydraStore GC："
+    /app/bin_cgi/storage_gc_worker
+    exit $?
+fi
 
 # 启动 9 个 FastCGI 进程
 echo -n "登录："
@@ -57,9 +64,6 @@ spawn-fcgi -a 0.0.0.0 -p 10012 -f /app/bin_cgi/ai
 echo -n "KnowledgeWorker："
 /app/bin_cgi/knowledge_worker &
 echo "OK"
-
-# 创建分片临时目录
-mkdir -p /tmp/chunks
 
 echo "所有 FastCGI 程序已启动"
 

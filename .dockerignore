@@ -1,0 +1,9 @@
+.git
+picture_bed/node_modules
+picture_bed/build
+bin_cgi
+**/*.o
+**/*.a
+**/*.so
+logs
+.ai
