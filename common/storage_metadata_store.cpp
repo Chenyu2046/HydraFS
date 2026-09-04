@@ -31,6 +31,11 @@ bool IsReady(const std::string &state) {
     return state == "READY";
 }
 
+long long NowSeconds() {
+    return static_cast<long long>(std::chrono::system_clock::to_time_t(
+        std::chrono::system_clock::now()));
+}
+
 bool DbFailpoint(const char *name) {
     const char *configured = std::getenv("HYDRA_DB_FAILPOINT");
     return configured && std::strcmp(configured, name) == 0;
@@ -93,8 +98,12 @@ bool MetadataStore::Exec(const std::string &sql, const std::vector<std::string> 
         binds[i].buffer_length = lengths[i];
         binds[i].length = &lengths[i];
     }
-    const bool ok = (params.empty() || mysql_stmt_bind_param(statement, binds.data()) == 0) &&
-                    mysql_stmt_execute(statement) == 0;
+    const bool bound = params.empty() || mysql_stmt_bind_param(statement, binds.data()) == 0;
+    const bool ok = bound && mysql_stmt_execute(statement) == 0;
+    if (ok) {
+        last_affected_rows_ = mysql_stmt_affected_rows(statement);
+        last_insert_id_ = static_cast<long long>(mysql_stmt_insert_id(statement));
+    }
     mysql_stmt_close(statement);
     return ok;
 }
@@ -166,11 +175,11 @@ bool MetadataStore::Query(const std::string &sql, const std::vector<std::string>
 }
 
 long long MetadataStore::LastInsertId() const {
-    return connection_ ? static_cast<long long>(mysql_insert_id(connection_)) : 0;
+    return last_insert_id_;
 }
 
 unsigned long long MetadataStore::AffectedRows() const {
-    return connection_ ? mysql_affected_rows(connection_) : 0;
+    return last_affected_rows_;
 }
 
 bool MetadataStore::ReadSession(const std::vector<std::string> &row,
@@ -196,21 +205,24 @@ bool MetadataStore::GetSession(const std::string &upload_id, const std::string &
                "WHERE id=? AND user=? LIMIT 1", {upload_id, user}, &rows) || rows.empty()) {
         return false;
     }
-    return ReadSession(rows[0], session);
+    return ReadSession(rows[0], session) && ReadObjectInfo(session);
 }
 
 bool MetadataStore::ReadStatuses(const std::string &upload_id,
+                                 const std::string &current_upload_id,
                                  std::vector<PartStatus> *statuses) {
     std::vector<std::vector<std::string>> rows;
     if (!Query("SELECT p.part_index,p.size,p.sha256,COALESCE(c.state,'MISSING'),"
-               "COALESCE(c.backend_file_id,''),"
-               "COALESCE(c.id,0) FROM upload_part p LEFT JOIN chunk_blob c ON c.id=p.chunk_id "
+               "COALESCE(c.backend_file_id,''),COALESCE(c.id,0),"
+               "COALESCE(c.owner_upload_id,''),COALESCE(UNIX_TIMESTAMP(c.lease_until),0),"
+               "COALESCE(c.lease_epoch,0) FROM upload_part p LEFT JOIN chunk_blob c ON c.id=p.chunk_id "
                "WHERE p.upload_id=? ORDER BY p.part_index", {upload_id}, &rows)) {
         return false;
     }
     statuses->clear();
+    const long long now = NowSeconds();
     for (const auto &row : rows) {
-        if (row.size() < 5) return false;
+        if (row.size() < 9) return false;
         PartStatus status;
         status.spec.index = std::stoi(row[0]);
         status.spec.size = std::stoll(row[1]);
@@ -218,7 +230,40 @@ bool MetadataStore::ReadStatuses(const std::string &upload_id,
         status.state = row[3];
         status.backend_file_id = row[4];
         status.chunk_id = std::stoll(row[5]);
+        status.owner_upload_id = row[6];
+        status.lease_until = std::stoll(row[7]);
+        status.lease_epoch = std::stoll(row[8]);
+        if (status.state == "READY") {
+            status.availability = PartAvailability::kReady;
+        } else if (status.state == "UPLOADING" &&
+                   status.owner_upload_id == current_upload_id) {
+            status.availability = PartAvailability::kUploadable;
+        } else if (status.state == "UPLOADING" &&
+                   status.owner_upload_id != current_upload_id &&
+                   status.lease_until > now) {
+            status.availability = PartAvailability::kWaiting;
+        } else {
+            status.availability = PartAvailability::kMissing;
+        }
         statuses->push_back(std::move(status));
+    }
+    return true;
+}
+
+bool MetadataStore::ReadObjectInfo(UploadSession *session) {
+    if (!session) return false;
+    std::vector<std::vector<std::string>> rows;
+    if (!Query("SELECT COALESCE(storage_mode,'legacy'),COALESCE(object_id,''),"
+               "COALESCE(manifest_id,0),COALESCE(url,'') FROM file_info "
+               "WHERE md5=? LIMIT 1", {session->content_digest}, &rows)) {
+        return false;
+    }
+    if (!rows.empty()) {
+        session->storage_mode = rows[0][0];
+        session->object_id = rows[0][1];
+        session->manifest_id = rows[0][2].empty() ? 0 : std::stoll(rows[0][2]);
+        session->legacy_url = rows[0][3];
+        if (session->storage_mode == "legacy") session->object_id.clear();
     }
     return true;
 }
@@ -231,7 +276,7 @@ bool MetadataStore::InitOrResume(const std::string &upload_id, const std::string
                                  std::vector<PartStatus> *statuses) {
     if (parts.empty()) {
         return !upload_id.empty() && GetSession(upload_id, user, session) &&
-               ReadStatuses(upload_id, statuses);
+               ReadStatuses(upload_id, upload_id, statuses);
     }
     if (!Txn("START TRANSACTION")) return false;
     auto rollback = [this]() { Txn("ROLLBACK"); };
@@ -243,6 +288,39 @@ bool MetadataStore::InitOrResume(const std::string &upload_id, const std::string
         rollback(); return false;
     }
     if (existing.empty()) {
+        if (upload_id.empty()) {
+            std::vector<std::vector<std::string>> file;
+            // A digest identifies bytes; it is not proof that this user owns them.
+            // Restrict instant-hit to an existing private relation for this user.
+            if (!Query("SELECT f.storage_mode,COALESCE(f.object_id,''),COALESCE(f.manifest_id,0) "
+                       "FROM file_info f JOIN user_file_list u ON u.md5=f.md5 "
+                       "WHERE f.md5=? AND u.user=? FOR UPDATE", {content_digest, user}, &file)) {
+                rollback(); return false;
+            }
+            if (!file.empty()) {
+                if (!Exec("INSERT INTO upload_session(id,user,filename,size,content_digest,"
+                          "chunk_count,state,object_id,manifest_id) VALUES(?,?,?,?,?,?,'COMMITTED',?,?)",
+                          {id, user, filename, ToString(object_size), content_digest,
+                           ToString(static_cast<std::int64_t>(parts.size())), file[0][1], file[0][2]})) {
+                    rollback(); return false;
+                }
+                if (!Exec("INSERT IGNORE INTO user_file_list(user,md5,file_name,shared_status,pv) "
+                          "VALUES(?,?,?,0,0)", {user, content_digest, filename})) {
+                    rollback(); return false;
+                }
+                if (AffectedRows() == 1 &&
+                    (!Exec("INSERT INTO user_file_count(user,count) VALUES(?,1) "
+                           "ON DUPLICATE KEY UPDATE count=count+1", {user}) ||
+                     !Exec("UPDATE file_info SET count=count+1 WHERE md5=?", {content_digest}))) {
+                    rollback(); return false;
+                }
+                if (!Txn("COMMIT") || !GetSession(id, user, session)) {
+                    rollback(); return false;
+                }
+                statuses->clear();
+                return true;
+            }
+        }
         if (!Exec("INSERT INTO upload_session(id,user,filename,size,content_digest,chunk_count,state) "
                   "VALUES(?,?,?,?,?,?,'UPLOADING')",
                   {id, user, filename, ToString(object_size), content_digest,
@@ -256,6 +334,13 @@ bool MetadataStore::InitOrResume(const std::string &upload_id, const std::string
     if (!existing.empty() && session->state != "INIT" && session->state != "UPLOADING" &&
         session->state != "COMMITTING" && session->state != "COMMITTED") {
         rollback(); return false;
+    }
+    if (!existing.empty() && session->state == "COMMITTED") {
+        if (!Txn("COMMIT") || !GetSession(id, user, session) ||
+            !ReadStatuses(id, id, statuses)) {
+            rollback(); return false;
+        }
+        return true;
     }
 
     for (const PartSpec &part : parts) {
@@ -277,7 +362,7 @@ bool MetadataStore::InitOrResume(const std::string &upload_id, const std::string
         }
         std::vector<std::vector<std::string>> chunk;
         if (!Query("SELECT id,state,COALESCE(owner_upload_id,''),"
-                   "COALESCE(UNIX_TIMESTAMP(lease_until),0) FROM chunk_blob "
+                   "COALESCE(UNIX_TIMESTAMP(lease_until),0),COALESCE(lease_epoch,0) FROM chunk_blob "
                    "WHERE sha256=? AND size=? FOR UPDATE",
                    {part.sha256, ToString(part.size)}, &chunk)) {
             rollback(); return false;
@@ -295,7 +380,7 @@ bool MetadataStore::InitOrResume(const std::string &upload_id, const std::string
                 state = "UPLOADING";
             } else {
                 if (!Query("SELECT id,state,COALESCE(owner_upload_id,''),"
-                           "COALESCE(UNIX_TIMESTAMP(lease_until),0) FROM chunk_blob "
+                           "COALESCE(UNIX_TIMESTAMP(lease_until),0),COALESCE(lease_epoch,0) FROM chunk_blob "
                            "WHERE sha256=? AND size=? FOR UPDATE",
                            {part.sha256, ToString(part.size)}, &chunk) || chunk.empty()) {
                     rollback(); return false;
@@ -307,21 +392,34 @@ bool MetadataStore::InitOrResume(const std::string &upload_id, const std::string
             chunk_id = chunk[0][0];
             state = chunk[0][1];
             const long long lease = std::stoll(chunk[0][3]);
-            const long long now = static_cast<long long>(std::chrono::system_clock::to_time_t(
-                std::chrono::system_clock::now()));
-            if (state == "UPLOADING" && (chunk[0][2] == id || lease < now)) {
+            const long long now = NowSeconds();
+            if (state == "UPLOADING" && chunk[0][2] == id) {
                 if (!Exec("UPDATE chunk_blob SET owner_upload_id=?,lease_until="
                           "DATE_ADD(NOW(), INTERVAL 15 MINUTE),state='UPLOADING' WHERE id=?",
                           {id, chunk_id})) {
                     rollback(); return false;
                 }
+            } else if (state == "UPLOADING" && lease < now) {
+                if (!Exec("UPDATE chunk_blob SET owner_upload_id=?,lease_until="
+                          "DATE_ADD(NOW(), INTERVAL 15 MINUTE),lease_epoch=lease_epoch+1,"
+                          "state='UPLOADING' WHERE id=? AND state='UPLOADING' AND "
+                          "(lease_until IS NULL OR lease_until<NOW())",
+                          {id, chunk_id}) || AffectedRows() != 1) {
+                    rollback(); return false;
+                }
             } else if (state == "GC_PENDING" || state == "FAILED") {
                 if (!Exec("UPDATE chunk_blob SET owner_upload_id=?,lease_until="
-                          "DATE_ADD(NOW(), INTERVAL 15 MINUTE),state='UPLOADING' WHERE id=? "
-                          "AND ref_count=0", {id, chunk_id})) {
+                          "DATE_ADD(NOW(), INTERVAL 15 MINUTE),lease_epoch=lease_epoch+1,"
+                          "state='UPLOADING' WHERE id=? AND ref_count=0 AND state IN ('GC_PENDING','FAILED')",
+                          {id, chunk_id}) || AffectedRows() != 1) {
                     rollback(); return false;
                 }
                 state = "UPLOADING";
+            } else if (state == "DELETING") {
+                // GC owns this row until FinishGc. Never bind an active upload to
+                // a blob that is already being removed from the backend.
+                rollback();
+                return false;
             }
         }
         if (!Exec("UPDATE upload_part SET size=?,sha256=?,chunk_id=?,state=? "
@@ -331,7 +429,7 @@ bool MetadataStore::InitOrResume(const std::string &upload_id, const std::string
             rollback(); return false;
         }
     }
-    if (!Txn("COMMIT") || !GetSession(id, user, session) || !ReadStatuses(id, statuses)) {
+    if (!Txn("COMMIT") || !GetSession(id, user, session) || !ReadStatuses(id, id, statuses)) {
         rollback(); return false;
     }
     return true;
@@ -339,65 +437,72 @@ bool MetadataStore::InitOrResume(const std::string &upload_id, const std::string
 
 bool MetadataStore::MarkPartReady(const std::string &upload_id, int part_index,
                                   const std::string &owner_upload_id,
+                                  std::int64_t lease_epoch,
                                   const std::string &backend_file_id) {
     if (!Txn("START TRANSACTION")) return false;
     std::vector<std::vector<std::string>> chunk;
     bool ok = Query("SELECT chunk_id FROM upload_part WHERE upload_id=? AND part_index=? FOR UPDATE",
                     {upload_id, ToString(part_index)}, &chunk) && chunk.size() == 1 &&
               Exec("UPDATE chunk_blob SET state='READY',backend_file_id=?,owner_upload_id=NULL,"
-                   "lease_until=NULL WHERE id=? AND state='UPLOADING' AND owner_upload_id=?",
-                   {backend_file_id, chunk[0][0], owner_upload_id}) &&
-              [&]() {
-                  std::vector<std::vector<std::string>> state;
-                  return Query("SELECT state,COALESCE(owner_upload_id,'') FROM chunk_blob "
-                               "WHERE id=?", {chunk[0][0]}, &state) && state.size() == 1 &&
-                         state[0][0] == "READY" && state[0][1].empty();
-              }() &&
+                   "lease_until=NULL WHERE id=? AND state='UPLOADING' AND owner_upload_id=? "
+                   "AND lease_epoch=?", {backend_file_id, chunk[0][0], owner_upload_id,
+                                          ToString(lease_epoch)}) && AffectedRows() == 1 &&
               Exec("UPDATE upload_part SET state='READY' WHERE chunk_id=?", {chunk[0][0]}) &&
               Txn("COMMIT");
     if (!ok) Txn("ROLLBACK");
     return ok;
 }
 
-bool MetadataStore::CanUploadPart(const std::string &upload_id, int part_index) {
+bool MetadataStore::ClaimPartUpload(const std::string &upload_id, int part_index,
+                                    PartClaim *claim) {
+    if (!claim) return false;
+    *claim = PartClaim();
+    if (!Txn("START TRANSACTION")) return false;
     std::vector<std::vector<std::string>> rows;
     if (!Query("SELECT c.id,c.state,COALESCE(c.owner_upload_id,''),"
                "COALESCE(UNIX_TIMESTAMP(c.lease_until),0),c.ref_count FROM upload_part p "
                "JOIN chunk_blob c ON c.id=p.chunk_id WHERE p.upload_id=? AND p.part_index=?",
                {upload_id, ToString(part_index)}, &rows) || rows.size() != 1) {
+        Txn("ROLLBACK");
         return false;
     }
     const std::string &chunk_id = rows[0][0];
-    if (rows[0][1] == "UPLOADING" && rows[0][2] == upload_id) return true;
-    const long long lease = std::stoll(rows[0][3]);
-    const long long now = static_cast<long long>(std::chrono::system_clock::to_time_t(
-        std::chrono::system_clock::now()));
-    if (rows[0][4] != "0" && rows[0][4] != "") return false;
-    if ((rows[0][1] == "FAILED" || rows[0][1] == "GC_PENDING") &&
-        Exec("UPDATE chunk_blob SET state='UPLOADING',owner_upload_id=?,"
-             "lease_until=DATE_ADD(NOW(),INTERVAL 15 MINUTE),gc_after=NULL "
-             "WHERE id=? AND state IN ('FAILED','GC_PENDING') AND ref_count=0",
-             {upload_id, chunk_id})) {
-        return AffectedRows() == 1;
+    if ((rows[0][4] != "0" && rows[0][4] != "") || rows[0][1] == "READY") {
+        Txn("ROLLBACK");
+        return false;
     }
-    if (rows[0][1] == "UPLOADING" && lease < now &&
-        Exec("UPDATE chunk_blob SET owner_upload_id=?,lease_until=DATE_ADD(NOW(),INTERVAL 15 MINUTE) "
-             "WHERE id=? AND state='UPLOADING' AND (lease_until IS NULL OR lease_until<NOW())",
-             {upload_id, chunk_id})) {
-        return AffectedRows() == 1;
+    if (!Exec("UPDATE chunk_blob SET state='UPLOADING',owner_upload_id=?,"
+              "lease_until=DATE_ADD(NOW(),INTERVAL 15 MINUTE),lease_epoch=lease_epoch+1,"
+              "gc_after=NULL WHERE id=? AND ref_count=0 AND ("
+              "state IN ('FAILED','GC_PENDING') OR "
+              "(state='UPLOADING' AND (owner_upload_id=? OR lease_until IS NULL OR lease_until<NOW())))",
+              {upload_id, chunk_id, upload_id}) || AffectedRows() != 1) {
+        Txn("ROLLBACK");
+        return false;
     }
-    return false;
+    std::vector<std::vector<std::string>> claimed;
+    if (!Query("SELECT id,state,lease_epoch FROM chunk_blob WHERE id=?", {chunk_id}, &claimed) ||
+        claimed.size() != 1 || !Txn("COMMIT")) {
+        Txn("ROLLBACK");
+        return false;
+    }
+    claim->granted = true;
+    claim->chunk_id = std::stoll(claimed[0][0]);
+    claim->state = claimed[0][1];
+    claim->lease_epoch = std::stoll(claimed[0][2]);
+    return true;
 }
 
 bool MetadataStore::MarkPartFailed(const std::string &upload_id, int part_index,
-                                   const std::string &owner_upload_id) {
+                                   const std::string &owner_upload_id,
+                                   std::int64_t lease_epoch) {
     if (!Txn("START TRANSACTION")) return false;
     std::vector<std::vector<std::string>> chunk;
     bool ok = Query("SELECT chunk_id FROM upload_part WHERE upload_id=? AND part_index=? FOR UPDATE",
                     {upload_id, ToString(part_index)}, &chunk) && chunk.size() == 1 &&
               Exec("UPDATE chunk_blob SET state='FAILED',owner_upload_id=NULL,lease_until=NULL,"
-                   "retry_count=retry_count+1 WHERE id=? AND owner_upload_id=?",
-                   {chunk[0][0], owner_upload_id}) && AffectedRows() == 1 &&
+                   "retry_count=retry_count+1 WHERE id=? AND owner_upload_id=? AND lease_epoch=?",
+                   {chunk[0][0], owner_upload_id, ToString(lease_epoch)}) && AffectedRows() == 1 &&
               Exec("UPDATE upload_part SET state='MISSING' WHERE upload_id=? AND part_index=?",
                    {upload_id, ToString(part_index)}) && Txn("COMMIT");
     if (!ok) Txn("ROLLBACK");
@@ -475,6 +580,15 @@ bool MetadataStore::Commit(const std::string &upload_id, const std::string &user
         session->storage_mode = file[0][1];
         session->legacy_url = file[0][5];
         if (session->storage_mode == "legacy") object_id.clear();
+        if (!Exec("UPDATE chunk_blob c JOIN upload_part p ON p.chunk_id=c.id SET "
+                  "c.state='GC_PENDING',c.gc_after=DATE_ADD(NOW(),INTERVAL 1 HOUR),"
+                  "c.owner_upload_id=NULL,c.lease_until=NULL WHERE p.upload_id=? "
+                  "AND c.state='READY' AND c.ref_count=0 AND NOT EXISTS ("
+                  "SELECT 1 FROM upload_part p2 JOIN upload_session s2 ON s2.id=p2.upload_id "
+                  "WHERE p2.chunk_id=c.id AND p2.upload_id<>? AND "
+                  "s2.state IN ('INIT','UPLOADING','COMMITTING'))", {upload_id, upload_id})) {
+            rollback(); return false;
+        }
     }
     if (!Exec("INSERT IGNORE INTO user_file_list(user,md5,file_name,shared_status,pv) "
               "VALUES(?,?,?,0,0)", {user, session->content_digest, session->filename})) {
@@ -534,6 +648,15 @@ bool MetadataStore::DeleteObjectForUser(const std::string &object_id, const std:
     const int references = std::stoi(rows[0][3]);
     if (!Exec("DELETE FROM user_file_list WHERE user=? AND md5=? AND file_name=?",
               {user, digest, rows[0][4]})) {
+        rollback(); return false;
+    }
+    if (!Exec("DELETE FROM share_file_list WHERE user=? AND md5=? AND file_name=?",
+              {user, digest, rows[0][4]})) {
+        rollback(); return false;
+    }
+    const bool had_share = AffectedRows() > 0;
+    if (had_share && !Exec("UPDATE user_file_count SET count=GREATEST(count-1,0) WHERE user=?",
+                           {"FILE_PUBLIC_COUNT"})) {
         rollback(); return false;
     }
     std::vector<std::vector<std::string>> remaining;
@@ -644,15 +767,13 @@ bool MetadataStore::FinishGc(const GcCandidate &candidate, bool deleted,
 bool MetadataStore::GetManifest(const std::string &object_id, const std::string &user,
                                 UploadSession *session,
                                 std::vector<PartStatus> *parts) {
+    if (user.empty()) return false;
     std::vector<std::vector<std::string>> rows;
-    const bool visible = user.empty()
-        ? Query("SELECT m.object_id,'','object',m.total_size,m.content_digest,m.chunk_count,"
-                "'COMMITTED',m.object_id,m.id FROM object_manifest m WHERE m.object_id=? LIMIT 1",
-                {object_id}, &rows)
-        : Query("SELECT m.object_id,?,ufl.file_name,m.total_size,m.content_digest,m.chunk_count,"
-                "'COMMITTED',m.object_id,m.id FROM object_manifest m JOIN file_info f "
-                "ON f.manifest_id=m.id JOIN user_file_list ufl ON ufl.md5=f.md5 "
-                "WHERE m.object_id=? AND ufl.user=? LIMIT 1", {user, object_id, user}, &rows);
+    const bool visible = Query("SELECT m.object_id,?,ufl.file_name,m.total_size,m.content_digest,m.chunk_count,"
+                               "'COMMITTED',m.object_id,m.id FROM object_manifest m JOIN file_info f "
+                               "ON f.manifest_id=m.id JOIN user_file_list ufl ON ufl.md5=f.md5 "
+                               "WHERE m.object_id=? AND ufl.user=? LIMIT 1",
+                               {user, object_id, user}, &rows);
     if (!visible ||
         rows.empty() || !ReadSession(rows[0], session)) return false;
     std::vector<std::vector<std::string>> chunks;
@@ -668,6 +789,39 @@ bool MetadataStore::GetManifest(const std::string &object_id, const std::string 
         part.state = row[3];
         part.backend_file_id = row[4];
         part.chunk_id = std::stoll(row[5]);
+        part.availability = PartAvailability::kReady;
+        parts->push_back(std::move(part));
+    }
+    return true;
+}
+
+bool MetadataStore::GetSharedManifest(const std::string &share_token,
+                                      UploadSession *session,
+                                      std::vector<PartStatus> *parts) {
+    if (share_token.empty()) return false;
+    std::vector<std::vector<std::string>> rows;
+    if (!Query("SELECT m.object_id,'','shared',m.total_size,m.content_digest,m.chunk_count,"
+               "'COMMITTED',m.object_id,m.id FROM share_file_list s JOIN file_info f "
+               "ON f.md5=s.md5 AND f.storage_mode='manifest' JOIN object_manifest m "
+               "ON m.id=f.manifest_id WHERE s.share_token=? LIMIT 1", {share_token}, &rows) ||
+        rows.empty() || !ReadSession(rows[0], session)) return false;
+    std::vector<std::vector<std::string>> chunks;
+    if (!Query("SELECT m.part_index,m.size,c.sha256,c.state,COALESCE(c.backend_file_id,''),c.id "
+               "FROM manifest_chunk m JOIN chunk_blob c ON c.id=m.chunk_id "
+               "WHERE m.manifest_id=? ORDER BY m.part_index", {ToString(session->manifest_id)}, &chunks)) {
+        return false;
+    }
+    parts->clear();
+    for (const auto &row : chunks) {
+        if (row.size() < 6) return false;
+        PartStatus part;
+        part.spec.index = std::stoi(row[0]);
+        part.spec.size = std::stoll(row[1]);
+        part.spec.sha256 = row[2];
+        part.state = row[3];
+        part.backend_file_id = row[4];
+        part.chunk_id = std::stoll(row[5]);
+        part.availability = PartAvailability::kReady;
         parts->push_back(std::move(part));
     }
     return true;

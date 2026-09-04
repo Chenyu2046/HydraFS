@@ -325,14 +325,16 @@ const uploadChunkWithRetry = async ({ file, chunkSize, md5, index, config, aimdW
   throw lastError || new Error(`分片 ${index} 上传失败`);
 };
 
-const uploadChunksWithAimd = async ({ file, md5, chunkSize, chunkCount, uploadedSet, onProgress, uploadUrlForIndex, uploadHeaders }) => {
+const uploadChunksWithAimd = async ({ file, md5, chunkSize, chunkCount, uploadedSet, pendingIndices, onProgress, uploadUrlForIndex, uploadHeaders }) => {
   const config = getChunkUploadConfig();
   const aimdWindow = createAimdWindow(config);
   const pending = [];
 
-  for (let i = 0; i < chunkCount; i++) {
-    if (!uploadedSet.has(i)) {
-      pending.push(i);
+  if (pendingIndices) {
+    pending.push(...pendingIndices);
+  } else {
+    for (let i = 0; i < chunkCount; i++) {
+      if (!uploadedSet.has(i)) pending.push(i);
     }
   }
 
@@ -423,14 +425,17 @@ const objectRequest = async (endpoint, user, body) => {
   return data;
 };
 
-const waitForObjectParts = async (user, uploadId) => {
-  for (let attempt = 0; attempt < 30; attempt++) {
-    const data = await objectRequest(API_CONFIG.ENDPOINTS.OBJECT_STATUS, user, { uploadId });
-    if (!data.waitingParts || data.waitingParts.length === 0) return data;
-    await new Promise(resolve => setTimeout(resolve, 500));
-  }
-  throw new Error('等待重复分片超时');
-};
+const objectUploadableParts = status => (
+  Array.isArray(status.uploadableParts) && status.uploadableParts.length > 0
+    ? status.uploadableParts
+    : (status.missingParts || [])
+);
+
+const objectPartsReady = (status, count) => (
+  Array.isArray(status.reusedParts)
+    ? status.reusedParts.length === count
+    : objectUploadableParts(status).length === 0 && (status.missingParts || []).length === 0
+);
 
 export const uploadObject = async (file, user, onProgress) => {
   const chunkSize = API_CONFIG.CHUNK_SIZE;
@@ -439,20 +444,37 @@ export const uploadObject = async (file, user, onProgress) => {
     filename: file.name, md5: contentDigest, contentDigest, size: file.size, parts
   });
   if (onProgress) onProgress(0);
-  const missing = new Set(init.missingParts || []);
-  const uploadedSet = new Set(Array.from({ length: parts.length }, (_, index) => index)
-    .filter(index => !missing.has(index)));
-  await uploadChunksWithAimd({
-    file, md5: contentDigest, chunkSize, chunkCount: parts.length, uploadedSet, onProgress,
-    uploadHeaders: { 'X-Upload-User': user.username, 'X-Upload-Token': user.token },
-    uploadUrlForIndex: index => `${API_CONFIG.BASE_URL}${API_CONFIG.ENDPOINTS.OBJECT_PART}`
-      + `?uploadId=${encodeURIComponent(init.uploadId)}&index=${index}&sha256=${parts[index].sha256}`
-  });
-  await waitForObjectParts(user, init.uploadId);
-  const finalStatus = await objectRequest(API_CONFIG.ENDPOINTS.OBJECT_STATUS, user,
-    { uploadId: init.uploadId });
-  if (finalStatus.missingParts && finalStatus.missingParts.length > 0) {
-    throw new Error(`对象仍缺少分片: ${finalStatus.missingParts.join(',')}`);
+  if (init.instant) {
+    if (onProgress) onProgress(100);
+    return { ...init, instant: true, alreadyExists: true, md5: contentDigest };
+  }
+
+  const allParts = Array.from({ length: parts.length }, (_, index) => index);
+  let status = init;
+  for (let attempt = 0; attempt < 60; attempt++) {
+    const uploadable = new Set(objectUploadableParts(status));
+    if (uploadable.size > 0) {
+      const uploadedSet = new Set(allParts.filter(index => !uploadable.has(index)));
+      await uploadChunksWithAimd({
+        file, md5: contentDigest, chunkSize, chunkCount: parts.length, uploadedSet,
+        pendingIndices: [...uploadable], onProgress,
+        uploadHeaders: { 'X-Upload-User': user.username, 'X-Upload-Token': user.token },
+        uploadUrlForIndex: index => `${API_CONFIG.BASE_URL}${API_CONFIG.ENDPOINTS.OBJECT_PART}`
+          + `?uploadId=${encodeURIComponent(init.uploadId)}&index=${index}&sha256=${parts[index].sha256}`
+      });
+    }
+    status = await objectRequest(API_CONFIG.ENDPOINTS.OBJECT_STATUS, user, { uploadId: init.uploadId });
+    const waiting = status.waitingParts || [];
+    const remaining = objectUploadableParts(status);
+    if (waiting.length === 0 && remaining.length === 0 && objectPartsReady(status, parts.length)) break;
+    if (waiting.length > 0 && remaining.length === 0) {
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+  }
+  const finalStatus = status;
+  if ((finalStatus.waitingParts || []).length > 0 || objectUploadableParts(finalStatus).length > 0 ||
+      !objectPartsReady(finalStatus, parts.length)) {
+    throw new Error('对象分片尚未全部就绪');
   }
   const committed = await objectRequest(API_CONFIG.ENDPOINTS.OBJECT_COMMIT, user, { uploadId: init.uploadId });
   if (onProgress) onProgress(100);
@@ -656,4 +678,33 @@ export const deleteImage = async (image, user) => {
     throw new Error(data.msg || '删除失败');
   }
   return data;
+};
+
+export const downloadImage = async (image, user) => {
+  if (image.storage_mode === 'manifest' && image.object_id) {
+    const response = await fetch(`${API_CONFIG.BASE_URL}${API_CONFIG.ENDPOINTS.OBJECT_DOWNLOAD}`
+      + `?objectId=${encodeURIComponent(image.object_id)}`, {
+      headers: { 'X-Upload-User': user.username, 'X-Upload-Token': user.token }
+    });
+    if (!response.ok) throw new Error('文件下载失败');
+    if ((response.headers.get('content-type') || '').includes('application/json')) {
+      const data = await response.json();
+      throw new Error(data.msg || '文件下载失败');
+    }
+    const url = URL.createObjectURL(await response.blob());
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = image.file_name || image.name || 'download';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    return;
+  }
+  const link = document.createElement('a');
+  link.href = image.url;
+  link.download = image.file_name || image.name || 'download';
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
 };

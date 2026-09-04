@@ -6,9 +6,21 @@ mkdir -p /fastdfs_data_and_log/client
 if [ "${STORAGE_GATEWAY_ONLY:-0}" = "1" ]; then
     echo -n "HydraStore Gateway："
     STORAGE_GATEWAY_WORKERS=${STORAGE_GATEWAY_WORKERS:-8}
-    spawn-fcgi -a 0.0.0.0 -p 10020 -F "$STORAGE_GATEWAY_WORKERS" -f /app/bin_cgi/storage_gateway
-    echo "OK"
-    exec tail -f /dev/null
+    start_gateway_workers() {
+        spawn-fcgi -a 0.0.0.0 -p 10020 -F "$STORAGE_GATEWAY_WORKERS" -f /app/bin_cgi/storage_gateway
+        echo "OK"
+    }
+    start_gateway_workers
+    while true; do
+        worker_count=$(pgrep -fc '[/]app/bin_cgi/storage_gateway' || true)
+        if [ "$worker_count" -lt "$STORAGE_GATEWAY_WORKERS" ]; then
+            echo "HydraStore Gateway worker pool degraded: $worker_count/$STORAGE_GATEWAY_WORKERS; restarting" >&2
+            pkill -TERM -f '[/]app/bin_cgi/storage_gateway' || true
+            sleep 1
+            start_gateway_workers
+        fi
+        sleep 2
+    done
 fi
 
 if [ "${STORAGE_GC_ONLY:-0}" = "1" ]; then

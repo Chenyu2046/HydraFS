@@ -20,6 +20,7 @@ export const API_CONFIG = {
     OBJECT_ABORT: '/api/object/abort',
     OBJECT_DELETE: '/api/object/delete',
     OBJECT_DOWNLOAD: '/api/object/download',
+    OBJECT_SHARE_DOWNLOAD: '/api/object/share-download',
     AI: '/api/ai'
   },
   CHUNK_SIZE: 10 * 1024 * 1024,  // 10MB per chunk

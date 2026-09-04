@@ -292,6 +292,12 @@ int share_file(char *user, char *md5, char *filename)
         ret = -1;
         goto END;
     }
+    if (mysql_affected_rows(conn) != 1)
+    {
+        LOG(DEALFILE_LOG_MODULE, DEALFILE_LOG_PROC, "share rejected: file is not owned by user\n");
+        ret = -1;
+        goto END;
+    }
 
     time_t now;;
     char create_time[TIME_STRING_LEN];
@@ -299,6 +305,12 @@ int share_file(char *user, char *md5, char *filename)
     now = time(NULL);
     strftime(create_time, TIME_STRING_LEN-1, "%Y-%m-%d %H:%M:%S", localtime(&now));
 
+
+    char share_token[33] = {0};
+    char share_seed[1024] = {0};
+    snprintf(share_seed, sizeof(share_seed), "%s:%s:%s:%ld:%d", user, md5, filename,
+             (long)now, rand());
+    md5_hex_string(share_seed, share_token);
 
     //分享文件的信息，额外保存在share_file_list保存列表
     /*
@@ -308,7 +320,7 @@ int share_file(char *user, char *md5, char *filename)
         -- file_name 文件名字
         -- pv 文件下载量，默认值为1，下载一次加1
     */
-    sprintf(sql_cmd, "insert into share_file_list (user, md5, create_time, file_name, pv) values ('%s', '%s', '%s', '%s', %d)", user, md5, create_time, filename, 0);
+    sprintf(sql_cmd, "insert into share_file_list (user, md5, create_time, file_name, pv, share_token) values ('%s', '%s', '%s', '%s', %d, '%s')", user, md5, create_time, filename, 0, share_token);
     if (mysql_query(conn, sql_cmd) != 0)
     {
         LOG(DEALFILE_LOG_MODULE, DEALFILE_LOG_PROC, "%s 操作失败: %s\n", sql_cmd, mysql_error(conn));

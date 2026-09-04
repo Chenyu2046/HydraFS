@@ -34,7 +34,9 @@ CREATE TABLE `share_file_list` (
   `file_name` varchar(128) DEFAULT NULL COMMENT '文件名字',
   `pv` int(11) DEFAULT '1' COMMENT '文件下载量，默认值为1，下载一次加1',
   `create_time` timestamp NULL DEFAULT CURRENT_TIMESTAMP COMMENT '文件共享时间',
-  PRIMARY KEY (`id`)
+  `share_token` varchar(64) DEFAULT NULL COMMENT '独立分享能力令牌',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uq_share_token` (`share_token`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8 COMMENT='共享文件列表';
 
 DROP TABLE IF EXISTS `share_picture_list`;
@@ -95,6 +97,7 @@ CREATE TABLE IF NOT EXISTS `chunk_blob` (
   `ref_count` bigint(20) NOT NULL DEFAULT '0',
   `owner_upload_id` varchar(64) DEFAULT NULL,
   `lease_until` datetime DEFAULT NULL,
+  `lease_epoch` bigint(20) NOT NULL DEFAULT '0',
   `gc_after` datetime DEFAULT NULL,
   `retry_count` int(11) NOT NULL DEFAULT '0',
   `next_retry_at` datetime DEFAULT NULL,

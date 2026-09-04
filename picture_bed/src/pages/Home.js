@@ -12,6 +12,7 @@ import { fetchUserImages } from '../services/images';
 import { aiSearch } from '../services/ai';
 
 import { HeroCanvas, ProductWindow } from '../components/HeroCanvas';
+import AuthenticatedImage from '../components/AuthenticatedImage';
 import MetricStrip from '../components/MetricStrip';
 import Bento from '../components/Bento';
 import MiniGraph from '../components/MiniGraph';
@@ -347,7 +348,7 @@ const Home = () => {
                       <ResultRow key={r.md5}>
                         <div className="thumb">
                           {['png','jpg','jpeg','gif','webp'].includes((r.type||'').toLowerCase()) && r.url
-                            ? <img src={r.url} alt={r.filename} />
+                            ? <AuthenticatedImage file={r} alt={r.filename} />
                             : <FileOutlined />}
                         </div>
                         <div className="meta">

@@ -17,7 +17,7 @@ export const fetchSharedFiles = async (start = 0, count = 50) => {
         ...file,
         name: file.file_name,
         url: file.storage_mode === 'manifest' && file.object_id
-          ? `${API_CONFIG.BASE_URL}${API_CONFIG.ENDPOINTS.OBJECT_DOWNLOAD}?objectId=${encodeURIComponent(file.object_id)}`
+          ? `${API_CONFIG.BASE_URL}${API_CONFIG.ENDPOINTS.OBJECT_SHARE_DOWNLOAD}?shareToken=${encodeURIComponent(file.shareToken || '')}`
           : (file.url ? file.url.replace(API_CONFIG.STORAGE_URL, API_CONFIG.BASE_URL) : ''),
       })),
       total: data.total || 0
@@ -42,7 +42,7 @@ export const fetchSharedFilesRanking = async (start = 0, count = 50) => {
       files: (data.files || []).map(file => ({
         ...file,
         url: file.storage_mode === 'manifest' && file.object_id
-          ? `${API_CONFIG.BASE_URL}${API_CONFIG.ENDPOINTS.OBJECT_DOWNLOAD}?objectId=${encodeURIComponent(file.object_id)}`
+          ? `${API_CONFIG.BASE_URL}${API_CONFIG.ENDPOINTS.OBJECT_SHARE_DOWNLOAD}?shareToken=${encodeURIComponent(file.shareToken || '')}`
           : (file.url ? file.url.replace(API_CONFIG.STORAGE_URL, API_CONFIG.BASE_URL) : ''),
       })),
       total: data.total || 0

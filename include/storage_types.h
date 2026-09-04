@@ -18,6 +18,13 @@ enum class ChunkState {
     kFailed
 };
 
+enum class PartAvailability {
+    kReady,
+    kUploadable,
+    kWaiting,
+    kMissing
+};
+
 struct PartSpec {
     int index = 0;
     std::int64_t size = 0;
@@ -29,6 +36,17 @@ struct PartStatus {
     std::string state;
     std::string backend_file_id;
     std::int64_t chunk_id = 0;
+    std::string owner_upload_id;
+    std::int64_t lease_until = 0;
+    std::int64_t lease_epoch = 0;
+    PartAvailability availability = PartAvailability::kMissing;
+};
+
+struct PartClaim {
+    bool granted = false;
+    std::int64_t chunk_id = 0;
+    std::int64_t lease_epoch = 0;
+    std::string state;
 };
 
 struct UploadSession {

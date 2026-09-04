@@ -33,6 +33,32 @@ services:
       timeout: 3s
       retries: 10
 
+  db_migrate:
+    image: mysql:8.0
+    container_name: tc_hydrastore_db_migrate
+    environment:
+      MYSQL_HOST: tc_mysql
+      MYSQL_USER: yuncunchu
+      MYSQL_DATABASE: yuncunchu
+      MYSQL_PWD: 123456
+    networks:
+      my_net:
+        ipv4_address: 172.30.0.10
+    volumes:
+      - ./mysql/hydra_v2.sql:/migrations/hydra_v2.sql:ro
+      - ./mysql/migrate.sh:/migrations/migrate.sh:ro
+    entrypoint: ["/bin/bash", "/migrations/migrate.sh"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "test", "-f", "/tmp/hydrastore-v2-migration-ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    depends_on:
+      tc_mysql:
+        condition: service_healthy
+
   nginx_fastdfs:
     build:
       context: ..
@@ -70,6 +96,8 @@ services:
     depends_on:
       tc_mysql:
         condition: service_healthy
+      db_migrate:
+        condition: service_healthy
       redis:
         condition: service_healthy
     healthcheck:
@@ -94,13 +122,15 @@ services:
     volumes:
       - ./nginx_fastdfs/client.conf:/etc/fdfs/client.conf
     healthcheck:
-      test: ["CMD-SHELL", "timeout 2 bash -c '</dev/tcp/127.0.0.1/10020'"]
+      test: ["CMD-SHELL", "test \"$(pgrep -fc '[/]app/bin_cgi/storage_gateway')\" -ge 8"]
       interval: 10s
       timeout: 3s
       retries: 5
       start_period: 10s
     depends_on:
       tc_mysql:
+        condition: service_healthy
+      db_migrate:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -120,13 +150,15 @@ services:
     volumes:
       - ./nginx_fastdfs/client.conf:/etc/fdfs/client.conf
     healthcheck:
-      test: ["CMD-SHELL", "timeout 2 bash -c '</dev/tcp/127.0.0.1/10020'"]
+      test: ["CMD-SHELL", "test \"$(pgrep -fc '[/]app/bin_cgi/storage_gateway')\" -ge 8"]
       interval: 10s
       timeout: 3s
       retries: 5
       start_period: 10s
     depends_on:
       tc_mysql:
+        condition: service_healthy
+      db_migrate:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -146,6 +178,8 @@ services:
       - ./nginx_fastdfs/client.conf:/etc/fdfs/client.conf
     depends_on:
       tc_mysql:
+        condition: service_healthy
+      db_migrate:
         condition: service_healthy
       nginx_fastdfs:
         condition: service_healthy

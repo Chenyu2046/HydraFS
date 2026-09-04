@@ -1,12 +1,13 @@
 import React from 'react';
 import styled from '@emotion/styled';
 import {
-  FileOutlined, FilePdfOutlined, FileWordOutlined, FileExcelOutlined,
+  FilePdfOutlined, FileWordOutlined, FileExcelOutlined,
   FileZipOutlined, FileTextOutlined, FileImageOutlined, FilePptOutlined,
   CodeOutlined, PlaySquareOutlined, CustomerServiceOutlined,
 } from '@ant-design/icons';
 import { Tag } from 'antd';
 import { classifyFileType } from '../mock/graph';
+import AuthenticatedImage from './AuthenticatedImage';
 
 const Grid = styled.div`
   display: grid;
@@ -109,7 +110,7 @@ const FileGrid = ({ files = [], onPick }) => (
         <Card key={f.md5} onClick={() => onPick && onPick(f)}>
           <div className="cover">
             {showImage
-              ? <img src={f.url} alt={f.file_name || f.name} />
+              ? <AuthenticatedImage file={f} alt={f.file_name || f.name} />
               : <span className="ph">{ico ? ico.icon : <FileImageOutlined />}</span>}
           </div>
           <div className="body">

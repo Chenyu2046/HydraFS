@@ -120,13 +120,29 @@ bool Hex64(const std::string &value) {
 void AddStatuses(cJSON *root, const std::vector<hydrastore::PartStatus> &statuses) {
     cJSON *missing = cJSON_CreateArray();
     cJSON *reused = cJSON_CreateArray();
+    cJSON *uploadable = cJSON_CreateArray();
     cJSON *waiting = cJSON_CreateArray();
     for (const auto &part : statuses) {
-        cJSON *target = part.state == "READY" ? reused : (part.state == "UPLOADING" ? waiting : missing);
-        cJSON_AddItemToArray(target, cJSON_CreateNumber(part.spec.index));
+        switch (part.availability) {
+        case hydrastore::PartAvailability::kReady:
+            cJSON_AddItemToArray(reused, cJSON_CreateNumber(part.spec.index));
+            break;
+        case hydrastore::PartAvailability::kUploadable:
+            cJSON_AddItemToArray(uploadable, cJSON_CreateNumber(part.spec.index));
+            cJSON_AddItemToArray(missing, cJSON_CreateNumber(part.spec.index));
+            break;
+        case hydrastore::PartAvailability::kWaiting:
+            cJSON_AddItemToArray(waiting, cJSON_CreateNumber(part.spec.index));
+            break;
+        case hydrastore::PartAvailability::kMissing:
+            cJSON_AddItemToArray(missing, cJSON_CreateNumber(part.spec.index));
+            cJSON_AddItemToArray(uploadable, cJSON_CreateNumber(part.spec.index));
+            break;
+        }
     }
     cJSON_AddItemToObject(root, "missingParts", missing);
     cJSON_AddItemToObject(root, "reusedParts", reused);
+    cJSON_AddItemToObject(root, "uploadableParts", uploadable);
     cJSON_AddItemToObject(root, "waitingParts", waiting);
 }
 
@@ -178,12 +194,16 @@ bool ParseInit(const std::string &body, std::string *upload_id, std::string *use
 
 struct InputContext {
     hydrastore::Sha256 hash;
+    std::int64_t bytes = 0;
 };
 
 std::size_t ReadAndHash(void *context, void *buffer, std::size_t capacity) {
     auto *input = static_cast<InputContext *>(context);
     const std::size_t got = FCGI_fread(buffer, 1, capacity, FCGI_stdin);
-    if (got) input->hash.Update(buffer, got);
+    if (got) {
+        input->hash.Update(buffer, got);
+        input->bytes += static_cast<std::int64_t>(got);
+    }
     return got;
 }
 
@@ -242,6 +262,10 @@ int main() {
             cJSON *response = Error(0, nullptr);
             cJSON_AddStringToObject(response, "uploadId", session.id.c_str());
             cJSON_AddNumberToObject(response, "chunkCount", session.chunk_count);
+            cJSON_AddBoolToObject(response, "instant", session.state == "COMMITTED");
+            if (!session.object_id.empty()) cJSON_AddStringToObject(response, "objectId", session.object_id.c_str());
+            if (!session.storage_mode.empty()) cJSON_AddStringToObject(response, "storageMode", session.storage_mode.c_str());
+            if (!session.legacy_url.empty()) cJSON_AddStringToObject(response, "url", session.legacy_url.c_str());
             AddStatuses(response, statuses);
             JsonResponse(response);
         } else if (action == "part") {
@@ -268,14 +292,20 @@ int main() {
                 DrainBody(); JsonResponse(Error(1, "part metadata mismatch")); continue;
             }
             if (expected.state == "READY") { DrainBody(); JsonResponse(Error(0, nullptr)); continue; }
-            bool can_upload = false;
-            for (int attempt = 0; attempt < 3 && !can_upload; ++attempt) {
-                can_upload = metadata.CanUploadPart(upload_id, index);
-                if (!can_upload && attempt < 2) {
+            const char *length = getenv("CONTENT_LENGTH");
+            const long content_length = length ? strtol(length, nullptr, 10) : -1;
+            if (content_length != expected.spec.size) {
+                DrainBody(); JsonResponse(Error(1, "part size mismatch")); continue;
+            }
+            hydrastore::PartClaim claim;
+            bool claimed = false;
+            for (int attempt = 0; attempt < 3 && !claimed; ++attempt) {
+                claimed = metadata.ClaimPartUpload(upload_id, index, &claim);
+                if (!claimed && attempt < 2) {
                     std::this_thread::sleep_for(std::chrono::milliseconds(20 * (attempt + 1)));
                 }
             }
-            if (!can_upload) {
+            if (!claimed) {
                 DrainBody();
                 JsonResponse(Error(2, "part is being uploaded by another session"));
                 continue;
@@ -284,14 +314,15 @@ int main() {
             hydrastore::BlobSource source{&input, ReadAndHash};
             std::string backend_id;
             const bool stored = blobs->Put(source, expected.spec.size, "", &backend_id);
-            const bool hash_ok = stored && input.hash.FinalHex() == expected.spec.sha256;
+            const bool hash_ok = stored && input.bytes == expected.spec.size &&
+                                 input.hash.FinalHex() == expected.spec.sha256;
             if (!hash_ok) {
                 if (stored) blobs->Delete(backend_id);
-                metadata.MarkPartFailed(upload_id, index, upload_id);
+                metadata.MarkPartFailed(upload_id, index, upload_id, claim.lease_epoch);
                 JsonResponse(Error(1, "sha256 or blob upload failed")); continue;
             }
             Failpoint("after_blob_put");
-            if (!metadata.MarkPartReady(upload_id, index, upload_id, backend_id)) {
+            if (!metadata.MarkPartReady(upload_id, index, upload_id, claim.lease_epoch, backend_id)) {
                 blobs->Delete(backend_id);
                 JsonResponse(Error(1, "part lease lost")); continue;
             }
@@ -341,20 +372,25 @@ int main() {
                 verify_token(const_cast<char *>(user.c_str()), const_cast<char *>(token.c_str())) != 0 ||
                 !metadata.DeleteObjectForUser(upload_id, user)) { JsonResponse(Error(1, "delete failed")); continue; }
             JsonResponse(Error(0, nullptr));
-        } else if (action == "download" && method == "GET") {
+        } else if ((action == "download" || action == "share-download") && method == "GET") {
             std::string user, token;
-            const char *header_user = getenv("HTTP_X_UPLOAD_USER");
-            const char *header_token = getenv("HTTP_X_UPLOAD_TOKEN");
-            if (header_user && header_token) {
-                if (!Credentials(&user, &token)) { JsonResponse(Error(4, "token验证失败")); continue; }
-            }
             hydrastore::UploadSession session;
             std::vector<hydrastore::PartStatus> parts;
-            if (!metadata.GetManifest(Query("objectId"), user, &session, &parts)) { JsonResponse(Error(1, "object not found")); continue; }
-            FCGI_fprintf(FCGI_stdout,
-                         "Content-Type: application/octet-stream\r\nContent-Length: %lld\r\n"
-                         "Content-Disposition: attachment; filename=\"object\"\r\n\r\n",
-                         static_cast<long long>(session.size));
+            if (action == "share-download") {
+                if (!metadata.GetSharedManifest(Query("shareToken"), &session, &parts)) {
+                    JsonResponse(Error(1, "share object not found")); continue;
+                }
+            } else {
+                if (!Credentials(&user, &token) ||
+                    !metadata.GetManifest(Query("objectId"), user, &session, &parts)) {
+                    JsonResponse(Error(4, "private object requires valid credentials")); continue;
+                }
+            }
+            const std::string header =
+                "Content-Type: application/octet-stream\r\nContent-Length: " +
+                std::to_string(session.size) +
+                "\r\nContent-Disposition: attachment; filename=\"object\"\r\n\r\n";
+            FCGI_fwrite(const_cast<char *>(header.data()), 1, header.size(), FCGI_stdout);
             hydrastore::BlobSink sink;
             sink.context = nullptr;
             sink.write = [](void *, const void *data, std::size_t size) {

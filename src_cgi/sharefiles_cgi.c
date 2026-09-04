@@ -318,6 +318,9 @@ int get_share_filelist(int start, int count)
         }
 
         column_index++;
+        if (row[column_index] != NULL) cJSON_AddStringToObject(item, "shareToken", row[column_index]);
+
+        column_index++;
         //-- url 文件url
         if (row[column_index] != NULL)
         {

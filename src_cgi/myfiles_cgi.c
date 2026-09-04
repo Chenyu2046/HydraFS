@@ -278,7 +278,7 @@ END:
 int get_user_filelist(char *cmd, char *user, int start, int count)
 {
     int ret = 0;
-    char sql_cmd[SQL_MAX_LEN] = {0};
+    char sql_cmd[2048] = {0};
     MYSQL *conn = NULL;
     cJSON *root = NULL;
     cJSON *array = NULL;
@@ -309,7 +309,7 @@ int get_user_filelist(char *cmd, char *user, int start, int count)
     if (strcmp(cmd, "normal") == 0) //获取用户文件信息
     {
         // sql语句，LEFT JOIN 知识层表获取解析状态
-        sprintf(sql_cmd, "select user_file_list.*, file_info.url, file_info.size, file_info.type, "
+        snprintf(sql_cmd, sizeof(sql_cmd), "select user_file_list.*, file_info.url, file_info.size, file_info.type, "
                 "file_info.storage_mode, file_info.object_id, file_info.manifest_id, "
                 "COALESCE(uad.parse_status, 'pending') as parse_status, "
                 "CASE WHEN wp.id IS NOT NULL THEN 1 ELSE 0 END as wiki_ready "
@@ -321,7 +321,7 @@ int get_user_filelist(char *cmd, char *user, int start, int count)
     }
     else if (strcmp(cmd, "pvasc") == 0) //按下载量升序
     {
-        sprintf(sql_cmd, "select user_file_list.*, file_info.url, file_info.size, file_info.type, "
+        snprintf(sql_cmd, sizeof(sql_cmd), "select user_file_list.*, file_info.url, file_info.size, file_info.type, "
                 "file_info.storage_mode, file_info.object_id, file_info.manifest_id, "
                 "COALESCE(uad.parse_status, 'pending') as parse_status, "
                 "CASE WHEN wp.id IS NOT NULL THEN 1 ELSE 0 END as wiki_ready "
@@ -333,7 +333,7 @@ int get_user_filelist(char *cmd, char *user, int start, int count)
     }
     else if (strcmp(cmd, "pvdesc") == 0) //按下载量降序
     {
-        sprintf(sql_cmd, "select user_file_list.*, file_info.url, file_info.size, file_info.type, "
+        snprintf(sql_cmd, sizeof(sql_cmd), "select user_file_list.*, file_info.url, file_info.size, file_info.type, "
                 "file_info.storage_mode, file_info.object_id, file_info.manifest_id, "
                 "COALESCE(uad.parse_status, 'pending') as parse_status, "
                 "CASE WHEN wp.id IS NOT NULL THEN 1 ELSE 0 END as wiki_ready "
@@ -517,7 +517,9 @@ END:
     cJSON_AddItemToObject(root, "total", cJSON_CreateNumber(total)); 
     out = cJSON_Print(root);
 
-    LOG(MYFILES_LOG_MODULE, MYFILES_LOG_PROC, "%s\n", out);
+    // Do not copy the complete response into the logger's fixed-size buffer.
+    // V2 metadata makes a multi-file response large enough to overflow it.
+    LOG(MYFILES_LOG_MODULE, MYFILES_LOG_PROC, "response rows = %d\n", line);
 
     if (out != NULL)
     {

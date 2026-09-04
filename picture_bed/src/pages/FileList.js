@@ -9,7 +9,7 @@ import {
 import styled from '@emotion/styled';
 import { useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { fetchUserImages, uploadImage, deleteImage, shareFile, cancelShareFile, pvFile } from '../services/images';
+import { fetchUserImages, uploadImage, deleteImage, downloadImage, shareFile, cancelShareFile, pvFile } from '../services/images';
 import { describeFile } from '../services/ai';
 import QuickUpload from '../components/QuickUpload';
 import FileGrid from '../components/FileGrid';
@@ -118,9 +118,7 @@ const FileList = () => {
   const handleCancelShare = async (r) => { try { await cancelShareFile(r, user); message.success('取消分享成功'); load(); if (drawerFile?.md5 === r.md5) setDrawerFile({ ...r, share_status: 0 }); } catch { message.error('取消失败'); } };
   const handleDelete      = async (r) => { try { await deleteImage(r, user); message.success('删除成功'); setDrawerFile(null); load(); } catch { message.error('删除失败'); } };
   const handleDownload    = async (r) => {
-    try { await pvFile(r, user); } catch {}
-    const link = document.createElement('a'); link.href = r.url; link.download = r.file_name || r.name;
-    document.body.appendChild(link); link.click(); document.body.removeChild(link);
+    try { await pvFile(r, user); await downloadImage(r, user); } catch {}
   };
 
   const columns = [

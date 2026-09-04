@@ -352,4 +352,51 @@ describe('uploadChunked AIMD scheduler', () => {
     expect(partCalls[0].url).toContain('sha256=' + 'ab'.repeat(32));
     expect(calls.map(({ url }) => url)).toContain('/api/object/commit');
   });
+
+  test('uploads uploadable parts and does not treat waiting parts as completed', async () => {
+    class ObjectFileReader {
+      readAsArrayBuffer() {
+        this.onload({ target: { result: new ArrayBuffer(2 * 1024 * 1024) } });
+      }
+    }
+    global.FileReader = ObjectFileReader;
+    window.crypto = {
+      subtle: {
+        digest: jest.fn(async () => new Uint8Array(32).fill(0xcd).buffer)
+      }
+    };
+    API_CONFIG.CHUNK_SIZE = 2 * 1024 * 1024;
+    API_CONFIG.CHUNK_THRESHOLD = 1;
+    const calls = [];
+    let statusCalls = 0;
+    global.fetch = jest.fn((url, options = {}) => {
+      calls.push({ url, options });
+      if (url === '/api/object/init') {
+        return Promise.resolve(jsonResponse({
+          code: 0, uploadId: 'upload-waiting', uploadableParts: [0], missingParts: [0], waitingParts: [1]
+        }));
+      }
+      if (url.startsWith('/api/object/part')) {
+        return Promise.resolve(jsonResponse({ code: 0 }));
+      }
+      if (url === '/api/object/status') {
+        statusCalls++;
+        if (statusCalls === 1) {
+          return Promise.resolve(jsonResponse({
+            code: 0, uploadableParts: [1], missingParts: [1], waitingParts: []
+          }));
+        }
+        return Promise.resolve(jsonResponse({ code: 0, uploadableParts: [], missingParts: [], waitingParts: [] }));
+      }
+      if (url === '/api/object/commit') {
+        return Promise.resolve(jsonResponse({ code: 0, objectId: 'object-waiting', storageMode: 'manifest' }));
+      }
+      throw new Error(`unexpected url ${url}`);
+    });
+
+    await expect(uploadImage(makeFile(4 * 1024 * 1024), { username: 'u', token: 't' }))
+      .resolves.toMatchObject({ objectId: 'object-waiting' });
+
+    expect(calls.filter(({ url }) => url.startsWith('/api/object/part'))).toHaveLength(2);
+  });
 });

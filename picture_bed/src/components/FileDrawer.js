@@ -10,6 +10,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { describeFileByMd5, fetchFileCard, fetchWiki } from '../services/ai';
 import { Pill } from './primitives';
 import { classifyFileType } from '../mock/graph';
+import AuthenticatedImage from './AuthenticatedImage';
 
 const Section = styled.div`
   border-top: 1px solid ${p => p.theme.colors.border};
@@ -208,7 +209,7 @@ const FileDrawer = ({ open, file, onClose, onShare, onCancelShare, onDelete, onD
 
       <Preview>
         {isImg(file.type) && file.url
-          ? <img src={file.url} alt={file.file_name || file.name} />
+          ? <AuthenticatedImage file={file} alt={file.file_name || file.name} />
           : <FileOutlined className="placeholder" />}
       </Preview>
 
