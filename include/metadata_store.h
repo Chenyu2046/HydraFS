@@ -39,7 +39,8 @@ public:
     bool ClaimPartUpload(const std::string &upload_id, int part_index,
                          PartClaim *claim);
     bool MarkPartFailed(const std::string &upload_id, int part_index,
-                        const std::string &owner_upload_id, std::int64_t lease_epoch);
+                        const std::string &owner_upload_id, std::int64_t lease_epoch,
+                        const std::string &backend_file_id, const std::string &error);
     bool Commit(const std::string &upload_id, const std::string &user,
                 UploadSession *session);
     bool Abort(const std::string &upload_id, const std::string &user);

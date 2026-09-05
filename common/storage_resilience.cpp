@@ -57,7 +57,6 @@ struct BlobStoreCircuitBreaker::Impl {
     bool probe_in_flight = false;
     std::uint64_t probe_generation = 0;
     std::uint64_t next_generation = 0;
-    std::string marker_token;
     Clock::time_point local_open_until{};
     std::int64_t next_open_ms = 3000;
     const int min_samples = static_cast<int>(EnvLong("HYDRA_BREAKER_MIN_SAMPLES", 12, 1, 16));
@@ -161,31 +160,25 @@ struct BlobStoreCircuitBreaker::Impl {
         return acquired;
     }
 
-    void DeleteProbe() {
+    void CompleteProbeRecovery() {
         if (!redis || redis->err != 0) return;
         static const char script[] =
-            "if redis.call('get',KEYS[1])==ARGV[1] then return redis.call('del',KEYS[1]) else return 0 end";
+            "if redis.call('get',KEYS[1])==ARGV[1] then "
+            "redis.call('del',KEYS[1]); redis.call('del',KEYS[2]); "
+            "return redis.call('exists',KEYS[3])==0 and 1 or 0 end return 0";
         redisReply *reply = static_cast<redisReply *>(redisCommand(
-            redis, "EVAL %b 1 %s %b", script, sizeof(script) - 1, probe_key.c_str(),
+            redis, "EVAL %b 3 %s %s %s %b", script, sizeof(script) - 1,
+            probe_key.c_str(), marker_key.c_str(), open_key.c_str(),
             probe_token.data(), probe_token.size()));
         if (reply) freeReplyObject(reply);
         probe_token.clear();
     }
 
-    void DeleteMarker(const std::string &token) {
-        if (!redis || redis->err != 0) return;
-        static const char script[] =
-            "if redis.call('get',KEYS[1])==ARGV[1] then return redis.call('del',KEYS[1]) else return 0 end";
-        redisReply *reply = static_cast<redisReply *>(redisCommand(
-            redis, "EVAL %b 1 %s %b", script, sizeof(script) - 1, marker_key.c_str(),
-            token.data(), token.size()));
-        if (reply) freeReplyObject(reply);
-    }
-
     void PublishOpen(std::int64_t duration_ms) {
         if (!ConnectRedis()) return;
-        marker_token = std::to_string(static_cast<long long>(::getpid())) + "-" +
-                                  std::to_string(static_cast<long long>(Clock::now().time_since_epoch().count()));
+        const std::string marker_token =
+            std::to_string(static_cast<long long>(::getpid())) + "-" +
+            std::to_string(static_cast<long long>(Clock::now().time_since_epoch().count()));
         const std::int64_t marker_ms = std::min<std::int64_t>(max_open_ms + probe_ms, 600000);
         static const char script[] =
             "local ttl=redis.call('pttl',KEYS[1]); "
@@ -267,9 +260,7 @@ void BlobStoreCircuitBreaker::Record(bool success, bool timed_out, std::int64_t 
             impl_->half_open_successes = 0;
             impl_->consecutive_failures = 0;
             impl_->next_open_ms = impl_->initial_open_ms;
-            impl_->DeleteProbe();
-            impl_->DeleteMarker(impl_->marker_token);
-            impl_->marker_token.clear();
+            impl_->CompleteProbeRecovery();
         }
         return;
     }

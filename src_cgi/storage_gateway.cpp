@@ -540,19 +540,25 @@ int main() {
                                  input.hash.FinalHex() == expected.spec.sha256;
             trace.hash_ok = hash_ok;
             if (!stored) {
-                metadata.MarkPartFailed(upload_id, index, upload_id, claim.lease_epoch);
+                metadata.MarkPartFailed(upload_id, index, upload_id, claim.lease_epoch,
+                                        "", "blob upload failed");
                 JsonResponse(Error(1, "blob upload failed"), 503, 2, "blobstore-failure");
                 continue;
             }
             if (!hash_ok) {
-                if (stored) blobs->Delete(backend_id);
-                metadata.MarkPartFailed(upload_id, index, upload_id, claim.lease_epoch);
+                // This object is not proven to contain the declared bytes;
+                // never persist its ID as a resumable chunk.  Only the fenced
+                // owner may perform best-effort physical cleanup.
+                if (metadata.MarkPartFailed(upload_id, index, upload_id, claim.lease_epoch,
+                                            "", "sha256 or blob upload failed")) {
+                    blobs->Delete(backend_id);
+                }
                 JsonResponse(Error(1, "sha256 or blob upload failed")); continue;
             }
             if (!metadata.RecordPartBackend(upload_id, index, upload_id,
                                             claim.lease_epoch, backend_id)) {
-                blobs->Delete(backend_id);
-                metadata.MarkPartFailed(upload_id, index, upload_id, claim.lease_epoch);
+                metadata.MarkPartFailed(upload_id, index, upload_id, claim.lease_epoch,
+                                        backend_id, "part backend metadata failed");
                 JsonResponse(Error(1, "part backend metadata failed")); continue;
             }
             Failpoint("after_blob_put");
@@ -561,12 +567,11 @@ int main() {
                 upload_id, index, upload_id, claim.lease_epoch, backend_id);
             trace.metadata_ready_ms = ElapsedMillis(metadata_started);
             if (!metadata_ready) {
-                // Delete only if this owner still fenced the row and the
-                // failure transition cleared its backend ID.  A stale owner
-                // must not delete a blob already adopted by a new owner.
-                if (metadata.MarkPartFailed(upload_id, index, upload_id, claim.lease_epoch)) {
-                    blobs->Delete(backend_id);
-                }
+                // Preserve the physical ID and let GC retry cleanup.  A stale
+                // owner cannot transition the fenced row or delete a newer
+                // owner's blob.
+                metadata.MarkPartFailed(upload_id, index, upload_id, claim.lease_epoch,
+                                        backend_id, "part lease lost");
                 JsonResponse(Error(1, "part lease lost")); continue;
             }
             JsonResponse(Error(0, nullptr));

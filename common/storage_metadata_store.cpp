@@ -580,15 +580,20 @@ bool MetadataStore::ClaimPartUpload(const std::string &upload_id, int part_index
 
 bool MetadataStore::MarkPartFailed(const std::string &upload_id, int part_index,
                                    const std::string &owner_upload_id,
-                                   std::int64_t lease_epoch) {
+                                   std::int64_t lease_epoch,
+                                   const std::string &backend_file_id,
+                                   const std::string &error) {
     if (!Txn("START TRANSACTION")) return false;
     std::vector<std::vector<std::string>> chunk;
     bool ok = Query("SELECT chunk_id FROM upload_part WHERE upload_id=? AND part_index=? FOR UPDATE",
                     {upload_id, ToString(part_index)}, &chunk) && chunk.size() == 1 &&
-              Exec("UPDATE chunk_blob SET state='FAILED',backend_file_id=NULL,owner_upload_id=NULL,"
-                   "lease_until=NULL,retry_count=retry_count+1 WHERE id=? AND owner_upload_id=? "
-                   "AND lease_epoch=?",
-                   {chunk[0][0], owner_upload_id, ToString(lease_epoch)}) && AffectedRows() == 1 &&
+              Exec("UPDATE chunk_blob SET state='GC_PENDING',"
+                   "backend_file_id=COALESCE(NULLIF(?,''),backend_file_id),owner_upload_id=NULL,"
+                   "lease_until=NULL,gc_after=DATE_SUB(NOW(),INTERVAL 1 SECOND),"
+                   "retry_count=retry_count+1,next_retry_at=DATE_SUB(NOW(),INTERVAL 1 SECOND),"
+                   "last_error=? WHERE id=? AND owner_upload_id=? AND lease_epoch=? AND ref_count=0",
+                   {backend_file_id, error, chunk[0][0], owner_upload_id, ToString(lease_epoch)}) &&
+              AffectedRows() == 1 &&
               Exec("UPDATE upload_part SET state='MISSING' WHERE upload_id=? AND part_index=?",
                    {upload_id, ToString(part_index)}) && Txn("COMMIT");
     if (!ok) Txn("ROLLBACK");

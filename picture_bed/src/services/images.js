@@ -269,12 +269,13 @@ const createAimdWindow = config => new AdaptiveConcurrencyController({
   max: config.MAX_CONCURRENCY
 });
 
-const uploadChunkWithRetry = async ({ file, chunkSize, md5, index, config, aimdWindow, abortSignal, uploadUrl: suppliedUrl, uploadHeaders }) => {
+const uploadChunkWithRetry = async ({ file, chunkSize, md5, index, config, aimdWindow, abortSignal, uploadUrl: suppliedUrl, uploadHeaders, waitForPartStatus }) => {
   const start = index * chunkSize;
   const end = Math.min(start + chunkSize, file.size);
   const chunk = file.slice(start, end);
   const uploadUrl = suppliedUrl || `${API_CONFIG.BASE_URL}${API_CONFIG.ENDPOINTS.CHUNK_UPLOAD}?md5=${encodeURIComponent(md5)}&index=${index}`;
   let lastError;
+  let partBusyPolls = 0;
 
   for (let attempt = 0; attempt <= config.MAX_RETRIES; attempt++) {
     if (abortSignal && abortSignal.aborted) {
@@ -299,6 +300,28 @@ const uploadChunkWithRetry = async ({ file, chunkSize, md5, index, config, aimdW
         return;
       }
 
+      if (uploadData.code === 2 && waitForPartStatus) {
+        aimdWindow.record({ success: false, rtt, status: uploadRes.status });
+        if (++partBusyPolls > config.MAX_RETRIES + 1) {
+          lastError = new Error(`分片 ${index} 等待其他上传者超时`);
+          break;
+        }
+        let partState;
+        try {
+          partState = await waitForPartStatus(index, abortSignal, config);
+        } catch (error) {
+          error.partBusyFailure = true;
+          throw error;
+        }
+        if (partState === 'ready') return;
+        if (partState === 'uploadable') {
+          attempt--;
+          continue;
+        }
+        lastError = new Error(`分片 ${index} 状态不可上传`);
+        break;
+      }
+
       lastError = new Error(`分片 ${index} 上传失败`);
       aimdWindow.record({ success: false, rtt, status: uploadRes.status, timeout: uploadRes.status === 408 });
       const retryable = uploadRes.status === 408 || uploadRes.status === 429 || uploadRes.status >= 500;
@@ -311,6 +334,7 @@ const uploadChunkWithRetry = async ({ file, chunkSize, md5, index, config, aimdW
     } catch (error) {
       const rtt = Date.now() - startedAt;
       lastError = error;
+      if (error.partBusyFailure) throw error;
       aimdWindow.record({ success: false, rtt, timeout: timeout.timedOut });
 
       if (abortSignal && abortSignal.aborted && !timeout.timedOut) {
@@ -328,7 +352,7 @@ const uploadChunkWithRetry = async ({ file, chunkSize, md5, index, config, aimdW
   throw lastError || new Error(`分片 ${index} 上传失败`);
 };
 
-const uploadChunksWithAimd = async ({ file, md5, chunkSize, chunkCount, uploadedSet, pendingIndices, onProgress, uploadUrlForIndex, uploadHeaders }) => {
+const uploadChunksWithAimd = async ({ file, md5, chunkSize, chunkCount, uploadedSet, pendingIndices, onProgress, uploadUrlForIndex, uploadHeaders, waitForPartStatus }) => {
   const config = getChunkUploadConfig();
   const aimdWindow = createAimdWindow(config);
   const pending = [];
@@ -383,7 +407,8 @@ const uploadChunksWithAimd = async ({ file, md5, chunkSize, chunkCount, uploaded
         aimdWindow,
         abortSignal: uploadController.signal,
         uploadUrl: uploadUrlForIndex ? uploadUrlForIndex(chunkIndex) : undefined,
-        uploadHeaders
+        uploadHeaders,
+        waitForPartStatus
       })
         .then(finishChunk)
         .catch(rejectAndAbort)
@@ -453,6 +478,32 @@ const objectRequest = async (endpoint, user, body) => {
   throw new Error('对象存储请求失败');
 };
 
+const waitForObjectPartStatus = async ({ uploadId, user, index, config, abortSignal }) => {
+  const maxPolls = config.MAX_RETRIES + 1;
+  for (let poll = 0; poll < maxPolls; poll++) {
+    let status;
+    try {
+      status = await objectRequest(API_CONFIG.ENDPOINTS.OBJECT_STATUS, user, { uploadId });
+    } catch (error) {
+      error.partBusyFailure = true;
+      throw error;
+    }
+    if ((status.reusedParts || []).includes(index)) return 'ready';
+    if ((status.uploadableParts || []).includes(index) || (status.missingParts || []).includes(index)) {
+      return 'uploadable';
+    }
+    if (!(status.waitingParts || []).includes(index)) {
+      const error = new Error(`分片 ${index} 状态不可上传`);
+      error.partBusyFailure = true;
+      throw error;
+    }
+    if (poll + 1 < maxPolls) await waitForRetry(config.RETRY_BASE_MS, abortSignal);
+  }
+  const error = new Error(`分片 ${index} 等待其他上传者超时`);
+  error.partBusyFailure = true;
+  throw error;
+};
+
 const objectUploadableParts = status => (
   Array.isArray(status.uploadableParts) && status.uploadableParts.length > 0
     ? status.uploadableParts
@@ -487,6 +538,9 @@ export const uploadObject = async (file, user, onProgress) => {
         file, md5: contentDigest, chunkSize, chunkCount: parts.length, uploadedSet,
         pendingIndices: [...uploadable], onProgress,
         uploadHeaders: { 'X-Upload-User': user.username, 'X-Upload-Token': user.token },
+        waitForPartStatus: (index, abortSignal, uploadConfig) => waitForObjectPartStatus({
+          uploadId: init.uploadId, user, index, config: uploadConfig, abortSignal
+        }),
         uploadUrlForIndex: index => `${API_CONFIG.BASE_URL}${API_CONFIG.ENDPOINTS.OBJECT_PART}`
           + `?uploadId=${encodeURIComponent(init.uploadId)}&index=${index}&sha256=${parts[index].sha256}`
       });
