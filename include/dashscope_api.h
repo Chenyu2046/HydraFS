@@ -18,8 +18,9 @@ extern "C" {
 int dashscope_describe_image(const char *api_key, const char *image_url,
                               char *out_desc, int max_len);
 
+const char *image_mime_type(const char *file_type);
 int dashscope_describe_image_file(const char *api_key, const char *image_path,
-                                  char *out_desc, int max_len);
+                                  const char *file_type, char *out_desc, int max_len);
 
 /**
  * @brief  调用 text-embedding-v3 模型，传入文本，返回 float 向量

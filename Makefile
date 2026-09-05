@@ -210,6 +210,7 @@ $(CGI_SRC_PATH)/faiss_wrapper.o: $(COMMON_PATH)/faiss_wrapper.cpp
 	$(CXX) -c $< -o $@ $(CXXFLAGS) $(CPPLFAGS)
 
 $(ai): $(CGI_SRC_PATH)/ai_cgi.o \
+	   $(COMMON_PATH)/image_mime.o \
 	   $(CGI_SRC_PATH)/dashscope_api.o \
 	   $(CGI_SRC_PATH)/faiss_wrapper.o \
 	   $(COMMON_PATH)/knowledge_task.o \
@@ -229,7 +230,17 @@ $(CGI_SRC_PATH)/knowledge_worker.o: $(CGI_SRC_PATH)/knowledge_worker.cpp
 $(COMMON_PATH)/storage_object_reader.o: $(COMMON_PATH)/storage_object_reader.cpp
 	$(CXX) -c $< -o $@ $(CXXFLAGS) $(CPPLFAGS)
 
+$(COMMON_PATH)/image_mime.o: $(COMMON_PATH)/image_mime.cpp
+	$(CXX) -c $< -o $@ $(CXXFLAGS) $(CPPLFAGS)
+
+$(CGI_BIN_PATH)/dashscope_mime_test: $(TEST_PATH)/dashscope_mime_test.cpp $(COMMON_PATH)/image_mime.cpp
+	$(CXX) $^ -o $@ $(CXXFLAGS) $(CPPLFAGS)
+
+test_dashscope_mime: $(CGI_BIN_PATH)/dashscope_mime_test
+	$(CGI_BIN_PATH)/dashscope_mime_test
+
 $(worker): $(CGI_SRC_PATH)/knowledge_worker.o \
+	   $(COMMON_PATH)/image_mime.o \
 	   $(CGI_SRC_PATH)/dashscope_api.o \
 	   $(CGI_SRC_PATH)/faiss_wrapper.o \
 	   $(COMMON_PATH)/knowledge_task.o \
@@ -290,5 +301,5 @@ clean:
 	-rm -rf *.o $(target) $(TEST_PATH)/*.o $(CGI_SRC_PATH)/*.o $(COMMON_PATH)/*.o
 
 # 声明伪文件
-.PHONY:clean ALL
+.PHONY:clean ALL test_dashscope_mime
 #######################################################################

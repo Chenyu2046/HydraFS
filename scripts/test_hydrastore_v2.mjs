@@ -258,6 +258,26 @@ async function aiTaskAndManifestReadRegression() {
   assert.equal(await dbQuery(
     `SELECT status FROM ai_parse_task WHERE user='${user}' AND md5='${zipDigest}' AND source='hydrastore_v2'`
   ), 'skipped', 'unsupported zip was scheduled for parsing');
+
+  const png = Buffer.from(
+    '89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d49444154789c6360f8cfc000000301010018dd8db40000000049454e44ae426082',
+    'hex'
+  );
+  const pngSession = await init(png, {
+    filename: `v2-regression-${Date.now()}.png`, uploadId: `ai-png-${Date.now()}`
+  });
+  assert.equal((await putPart(pngSession)).code, 0);
+  const pngCommit = await commit(pngSession.uploadId);
+  assert.equal(pngCommit.code, 0, JSON.stringify(pngCommit));
+  const pngDigest = md5(png);
+  assert.equal(await dbQuery(`SELECT type FROM file_info WHERE md5='${pngDigest}'`), 'png');
+  const pngResponse = await fetch(
+    `${baseUrl}/api/object/download?objectId=${encodeURIComponent(pngCommit.objectId)}`,
+    { headers: { 'X-Upload-User': user, 'X-Upload-Token': token } }
+  );
+  assert.equal(pngResponse.status, 200);
+  assert.equal(md5(Buffer.from(await pngResponse.arrayBuffer())), pngDigest,
+    'manifest PNG reconstruction changed image content');
 }
 
 async function deleteRevokesShare() {

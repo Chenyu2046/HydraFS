@@ -1200,7 +1200,8 @@ static int process_one_task(MYSQL *conn, long task_id, const char *user,
             return -1;
         }
         const int describe_result = manifest_object
-            ? dashscope_describe_image_file(api_key_early, file_path, vl_desc, sizeof(vl_desc))
+            ? dashscope_describe_image_file(api_key_early, file_path, type,
+                                            vl_desc, sizeof(vl_desc))
             : dashscope_describe_image(api_key_early, download_url, vl_desc, sizeof(vl_desc));
         if (describe_result != 0) {
             LOG(UTIL_LOG_MODULE, UTIL_LOG_PROC, "VL describe failed: %s\n", download_url);

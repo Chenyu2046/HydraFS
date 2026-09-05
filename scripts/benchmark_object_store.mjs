@@ -7,12 +7,15 @@ import os from 'node:os';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { promisify } from 'node:util';
+import { createAiMarkdownBlock } from './benchmark_workload.mjs';
 
 const baseUrl = process.env.HYDRA_BASE_URL || 'https://127.0.0.1';
 const user = process.env.HYDRA_USER;
 const token = process.env.HYDRA_TOKEN;
+const workload = process.env.HYDRA_BENCHMARK_WORKLOAD || 'binary';
 const partSize = Number(process.env.HYDRA_PART_SIZE || 10) * 1024 * 1024;
-const sizes = (process.env.HYDRA_BENCHMARK_SIZES || '240,960').split(',').map(value => Number(value.trim()) * 1024 * 1024);
+const defaultSizes = workload === 'ai-md' ? '320,1280' : '240,960';
+const sizes = (process.env.HYDRA_BENCHMARK_SIZES || defaultSizes).split(',').map(value => Number(value.trim()) * 1024 * 1024);
 const mode = process.env.HYDRA_BENCHMARK_MODE || 'aimd';
 const fixedConcurrency = Number(process.env.HYDRA_BENCHMARK_FIXED_CONCURRENCY || 8);
 const initialConcurrency = mode === 'fixed' ? fixedConcurrency : Number(process.env.HYDRA_BENCHMARK_INITIAL || 4);
@@ -23,7 +26,7 @@ const benchmarkSalt = Number(process.env.HYDRA_BENCHMARK_SALT || Date.now()) >>>
 const requestTimeoutMs = Number(process.env.HYDRA_BENCHMARK_REQUEST_TIMEOUT_MS || 120000);
 const execFileAsync = promisify(execFile);
 
-if (!user || !token || !['fixed', 'aimd'].includes(mode) ||
+if (!user || !token || !['binary', 'ai-md'].includes(workload) || !['fixed', 'aimd'].includes(mode) ||
     ![partSize, fixedConcurrency, initialConcurrency, minConcurrency, maxConcurrency, rounds, requestTimeoutMs]
       .every(value => Number.isSafeInteger(value) && value > 0) ||
     minConcurrency > initialConcurrency || initialConcurrency > maxConcurrency ||
@@ -128,14 +131,18 @@ async function makeFile(filePath, size, salt) {
       const partHash = crypto.createHash('sha256');
       while (offset < partEnd) {
         const length = Math.min(1024 * 1024, partEnd - offset);
-        const block = Buffer.allocUnsafe(length);
-        for (let i = 0; i < length; i++) {
-          const position = offset + i;
-          const partIndex = Math.floor(position / partSize);
-          const partOffset = position - partIndex * partSize;
-          block[i] = partOffset < 16
-            ? ((salt >>> ((partOffset % 4) * 8)) ^ partIndex ^ partOffset) & 0xff
-            : (position * 31 + partIndex * 17 + salt) & 0xff;
+        const block = workload === 'ai-md'
+          ? createAiMarkdownBlock(length, offset, salt)
+          : Buffer.allocUnsafe(length);
+        if (workload === 'binary') {
+          for (let i = 0; i < length; i++) {
+            const position = offset + i;
+            const partIndex = Math.floor(position / partSize);
+            const partOffset = position - partIndex * partSize;
+            block[i] = partOffset < 16
+              ? ((salt >>> ((partOffset % 4) * 8)) ^ partIndex ^ partOffset) & 0xff
+              : (position * 31 + partIndex * 17 + salt) & 0xff;
+          }
         }
         await handle.write(block);
         wholeHash.update(block);
@@ -266,7 +273,8 @@ async function downloadObject(objectId, expectedDigest, expectedSize) {
 }
 
 async function measure(size, directory, salt, round) {
-  const filePath = path.join(directory, `object-${size}-${round}-${Date.now()}.bin`);
+  const extension = workload === 'ai-md' ? 'md' : 'bin';
+  const filePath = path.join(directory, `object-${size}-${round}-${Date.now()}.${extension}`);
   const started = performance.now();
   const metadata = await makeFile(filePath, size, salt);
   try {
@@ -328,10 +336,13 @@ try {
   });
   const containerStats = await sampler.stop();
   console.log(JSON.stringify({
-    generatedAt: new Date().toISOString(), config: { mode, fixedConcurrency, initialConcurrency, minConcurrency, maxConcurrency, rounds, requestTimeoutMs, benchmarkSalt }, results, summaries,
+    generatedAt: new Date().toISOString(), config: { workload, mode, fixedConcurrency, initialConcurrency, minConcurrency, maxConcurrency, rounds, requestTimeoutMs, benchmarkSalt }, results, summaries,
     containerStats,
     limitations: [
       'This is a single-client run; compare mode=aimd with mode=fixed and the configured fixed concurrency.',
+      workload === 'ai-md'
+        ? 'AI MD is a synthetic knowledge-base Markdown workload with prose, code blocks, tables, and links; it is not a corpus-quality embedding benchmark.'
+        : 'Binary is a deterministic payload baseline, not representative of document parsing cost.',
       'Container CPU and memory are sampled through docker stats; host-level CPU, disk latency, and GC latency are not collected.',
     ],
   }, null, 2));

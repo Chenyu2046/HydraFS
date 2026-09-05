@@ -205,7 +205,7 @@ END:
 }
 
 int dashscope_describe_image_file(const char *api_key, const char *image_path,
-                                  char *out_desc, int max_len)
+                                  const char *file_type, char *out_desc, int max_len)
 {
     if (!image_path) return -1;
     FILE *file = fopen(image_path, "rb");
@@ -242,12 +242,7 @@ int dashscope_describe_image_file(const char *api_key, const char *image_path,
     encoded[out] = '\0';
     free(data);
 
-    const char *mime = "application/octet-stream";
-    const char *dot = strrchr(image_path, '.');
-    if (dot && strcasecmp(dot, ".png") == 0) mime = "image/png";
-    else if (dot && (strcasecmp(dot, ".jpg") == 0 || strcasecmp(dot, ".jpeg") == 0)) mime = "image/jpeg";
-    else if (dot && strcasecmp(dot, ".gif") == 0) mime = "image/gif";
-    else if (dot && strcasecmp(dot, ".webp") == 0) mime = "image/webp";
+    const char *mime = image_mime_type(file_type);
     char *data_url = (char *)malloc(strlen(mime) + out + 32);
     if (!data_url) { free(encoded); return -1; }
     sprintf(data_url, "data:%s;base64,%s", mime, encoded);
