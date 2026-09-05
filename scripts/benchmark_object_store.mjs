@@ -13,14 +13,21 @@ const user = process.env.HYDRA_USER;
 const token = process.env.HYDRA_TOKEN;
 const partSize = Number(process.env.HYDRA_PART_SIZE || 10) * 1024 * 1024;
 const sizes = (process.env.HYDRA_BENCHMARK_SIZES || '240,960').split(',').map(value => Number(value.trim()) * 1024 * 1024);
-const initialConcurrency = Number(process.env.HYDRA_BENCHMARK_INITIAL || 4);
-const minConcurrency = Number(process.env.HYDRA_BENCHMARK_MIN || 4);
-const maxConcurrency = Number(process.env.HYDRA_BENCHMARK_MAX || 32);
+const mode = process.env.HYDRA_BENCHMARK_MODE || 'aimd';
+const fixedConcurrency = Number(process.env.HYDRA_BENCHMARK_FIXED_CONCURRENCY || 8);
+const initialConcurrency = mode === 'fixed' ? fixedConcurrency : Number(process.env.HYDRA_BENCHMARK_INITIAL || 4);
+const minConcurrency = mode === 'fixed' ? fixedConcurrency : Number(process.env.HYDRA_BENCHMARK_MIN || 4);
+const maxConcurrency = mode === 'fixed' ? fixedConcurrency : Number(process.env.HYDRA_BENCHMARK_MAX || 32);
+const rounds = Number(process.env.HYDRA_BENCHMARK_ROUNDS || 5);
 const benchmarkSalt = Number(process.env.HYDRA_BENCHMARK_SALT || Date.now()) >>> 0;
 const requestTimeoutMs = Number(process.env.HYDRA_BENCHMARK_REQUEST_TIMEOUT_MS || 120000);
 const execFileAsync = promisify(execFile);
 
-if (!user || !token || sizes.some(size => !Number.isSafeInteger(size) || size <= 0)) {
+if (!user || !token || !['fixed', 'aimd'].includes(mode) ||
+    ![partSize, fixedConcurrency, initialConcurrency, minConcurrency, maxConcurrency, rounds, requestTimeoutMs]
+      .every(value => Number.isSafeInteger(value) && value > 0) ||
+    minConcurrency > initialConcurrency || initialConcurrency > maxConcurrency ||
+    sizes.some(size => !Number.isSafeInteger(size) || size <= 0)) {
   console.error('NOT RUN: set HYDRA_BASE_URL, HYDRA_USER, HYDRA_TOKEN, and valid HYDRA_BENCHMARK_SIZES');
   process.exit(2);
 }
@@ -35,6 +42,7 @@ async function post(endpoint, body) {
   const response = await fetch(`${baseUrl}${endpoint}`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ ...body, user, token }),
+    signal: AbortSignal.timeout(requestTimeoutMs),
   });
   if (!response.ok) throw new Error(`${endpoint}: HTTP ${response.status}`);
   return response.json();
@@ -108,7 +116,7 @@ async function collectPhysicalBytes(manifestId) {
   }
 }
 
-async function makeFile(filePath, size) {
+async function makeFile(filePath, size, salt) {
   const handle = await fs.open(filePath, 'w');
   const wholeHash = crypto.createHash('md5');
   const parts = [];
@@ -126,8 +134,8 @@ async function makeFile(filePath, size) {
           const partIndex = Math.floor(position / partSize);
           const partOffset = position - partIndex * partSize;
           block[i] = partOffset < 16
-            ? ((benchmarkSalt >>> ((partOffset % 4) * 8)) ^ partIndex ^ partOffset) & 0xff
-            : (position * 31 + partIndex * 17 + benchmarkSalt) & 0xff;
+            ? ((salt >>> ((partOffset % 4) * 8)) ^ partIndex ^ partOffset) & 0xff
+            : (position * 31 + partIndex * 17 + salt) & 0xff;
         }
         await handle.write(block);
         wholeHash.update(block);
@@ -167,39 +175,88 @@ async function uploadPart(filePath, uploadId, part) {
   }
 }
 
+function createAimdWindow() {
+  const clamp = value => Math.max(minConcurrency, Math.min(maxConcurrency, value));
+  const state = { size: clamp(initialConcurrency), samples: [] };
+  const tune = sample => {
+    if (mode === 'fixed') return;
+    state.samples.push(sample);
+    if (state.samples.length > 16) state.samples.shift();
+    const successes = state.samples.filter(item => item.success);
+    const failureRate = state.samples.filter(item => !item.success).length / state.samples.length;
+    const timeoutRate = state.samples.filter(item => item.timeout).length / state.samples.length;
+    const averageSuccess = successes.length
+      ? successes.reduce((sum, item) => sum + item.rtt, 0) / successes.length : sample.rtt;
+    const degraded = !sample.success || sample.timeout || failureRate > 0.2 ||
+      timeoutRate > 0.1 || sample.rtt > averageSuccess * 2;
+    if (degraded) state.size = clamp(Math.floor(state.size / 2));
+    else if (failureRate === 0 && timeoutRate === 0 && sample.rtt <= averageSuccess * 1.5) {
+      state.size = clamp(state.size + 1);
+    }
+  };
+  return {
+    get size() { return state.size; },
+    record(result) { tune({ success: result.ok, timeout: result.timedOut, rtt: result.elapsedMs }); },
+  };
+}
+
 async function uploadWithAimd(filePath, uploadId, parts, initialPending) {
   const pending = [...initialPending];
+  const aimdWindow = createAimdWindow();
   const successfulRtts = [];
-  let concurrency = initialConcurrency;
   let retries = 0;
   let timeouts = 0;
-  while (pending.length) {
-    const batch = pending.splice(0, concurrency);
-    const results = [];
-    let cursor = 0;
-    const workers = Array.from({ length: Math.min(concurrency, batch.length) }, async () => {
-      while (cursor < batch.length) results.push(await uploadPart(filePath, uploadId, batch[cursor++]));
-    });
-    await Promise.all(workers);
-    const failed = results.filter(result => !result.ok);
-    timeouts += results.filter(result => result.timedOut).length;
-    for (const result of results) if (result.ok) successfulRtts.push(result.elapsedMs);
-    if (failed.length) {
-      retries += failed.length;
-      pending.unshift(...failed.map(result => result.part));
-      concurrency = Math.max(minConcurrency, Math.floor(concurrency / 2));
-      if (retries > parts.length * 3) throw new Error(`too many part retries: ${retries}`);
-    } else {
-      concurrency = Math.min(maxConcurrency, concurrency + 1);
-    }
+  let inFlight = 0;
+  let settled = false;
+  return new Promise((resolve, reject) => {
+    const launchNext = () => {
+      if (settled) return;
+      while (inFlight < aimdWindow.size && pending.length) {
+        const part = pending.shift();
+        inFlight++;
+        uploadPartWithRetry(filePath, uploadId, part, aimdWindow).then(attempt => {
+          successfulRtts.push(attempt.result.elapsedMs);
+          retries += attempt.retries;
+          timeouts += attempt.timeouts;
+          if (retries > parts.length * 3) throw new Error(`too many part retries: ${retries}`);
+        }).catch(error => {
+          settled = true;
+          reject(error);
+        }).finally(() => {
+          inFlight--;
+          if (settled) return;
+          if (!pending.length && inFlight === 0) {
+            settled = true;
+            resolve({ retries, timeouts, finalConcurrency: aimdWindow.size, successfulRtts });
+          } else {
+            launchNext();
+          }
+        });
+      }
+    };
+    launchNext();
+  });
+}
+
+async function uploadPartWithRetry(filePath, uploadId, part, aimdWindow) {
+  const maxRetries = 3;
+  let retries = 0;
+  let timeouts = 0;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const result = await uploadPart(filePath, uploadId, part);
+    aimdWindow.record(result);
+    if (result.ok) return { result, retries, timeouts };
+    retries++;
+    if (result.timedOut) timeouts++;
   }
-  return { retries, timeouts, finalConcurrency: concurrency, successfulRtts };
+  throw new Error(`part ${part.index} failed after ${maxRetries + 1} attempts`);
 }
 
 async function downloadObject(objectId, expectedDigest, expectedSize) {
   const started = performance.now();
   const response = await fetch(`${baseUrl}/api/object/download?objectId=${encodeURIComponent(objectId)}`, {
     headers: { 'X-Upload-User': user, 'X-Upload-Token': token },
+    signal: AbortSignal.timeout(requestTimeoutMs),
   });
   if (!response.ok) throw new Error(`download: HTTP ${response.status}`);
   const digest = crypto.createHash('md5');
@@ -208,10 +265,10 @@ async function downloadObject(objectId, expectedDigest, expectedSize) {
   return { elapsedMs: performance.now() - started, bytes, valid: bytes === expectedSize && digest.digest('hex') === expectedDigest };
 }
 
-async function measure(size, directory) {
-  const filePath = path.join(directory, `object-${size}-${Date.now()}.bin`);
+async function measure(size, directory, salt, round) {
+  const filePath = path.join(directory, `object-${size}-${round}-${Date.now()}.bin`);
   const started = performance.now();
-  const metadata = await makeFile(filePath, size);
+  const metadata = await makeFile(filePath, size, salt);
   try {
     const init = await post('/api/object/init', {
       filename: path.basename(filePath), size, md5: metadata.contentDigest, contentDigest: metadata.contentDigest,
@@ -230,13 +287,14 @@ async function measure(size, directory) {
     if (!download.valid) throw new Error(`download digest/size mismatch: ${JSON.stringify(download)}`);
     const elapsedMs = performance.now() - started;
     return {
-      logicalBytes: size, parts: metadata.parts.length, elapsedMs,
+      round, logicalBytes: size, parts: metadata.parts.length, elapsedMs,
       uploadElapsedMs,
       endToEndThroughputMiBPerSec: size / 1024 / 1024 / (elapsedMs / 1000),
       uploadThroughputMiBPerSec: size / 1024 / 1024 / (uploadElapsedMs / 1000),
       downloadElapsedMs: download.elapsedMs,
       downloadThroughputMiBPerSec: size / 1024 / 1024 / (download.elapsedMs / 1000),
       partRttMs: { p50: percentile(upload.successfulRtts, 0.50), p95: percentile(upload.successfulRtts, 0.95), p99: percentile(upload.successfulRtts, 0.99), samples: upload.successfulRtts.length },
+      partRttSamplesMs: upload.successfulRtts,
       retries: upload.retries, timeouts: upload.timeouts, finalConcurrency: upload.finalConcurrency,
       physicalBytes: physical,
     };
@@ -249,13 +307,31 @@ const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'hydrastore-benchmark-
 const sampler = startContainerSampler();
 try {
   const results = [];
-  for (const size of sizes) results.push(await measure(size, directory));
+  for (let round = 1; round <= rounds; round++) {
+    for (const size of sizes) {
+      const salt = (benchmarkSalt + round * 2654435761 + size) >>> 0;
+      results.push(await measure(size, directory, salt, round));
+    }
+  }
+  const summaries = sizes.map(size => {
+    const rows = results.filter(result => result.logicalBytes === size);
+    const values = key => rows.map(row => row[key]);
+    const partRtts = rows.flatMap(row => row.partRttSamplesMs);
+    return {
+      logicalBytes: size,
+      rounds: rows.length,
+      uploadThroughputMiBPerSec: { median: percentile(values('uploadThroughputMiBPerSec'), 0.5), p95: percentile(values('uploadThroughputMiBPerSec'), 0.95) },
+      endToEndThroughputMiBPerSec: { median: percentile(values('endToEndThroughputMiBPerSec'), 0.5), p95: percentile(values('endToEndThroughputMiBPerSec'), 0.95) },
+      partRttMs: { p50: percentile(partRtts, 0.5), p95: percentile(partRtts, 0.95), p99: percentile(partRtts, 0.99), samples: partRtts.length },
+      retries: { total: rows.reduce((sum, row) => sum + row.retries, 0), timeouts: rows.reduce((sum, row) => sum + row.timeouts, 0) },
+    };
+  });
   const containerStats = await sampler.stop();
   console.log(JSON.stringify({
-    generatedAt: new Date().toISOString(), config: { partSize, initialConcurrency, minConcurrency, maxConcurrency, requestTimeoutMs, benchmarkSalt }, results,
+    generatedAt: new Date().toISOString(), config: { mode, fixedConcurrency, initialConcurrency, minConcurrency, maxConcurrency, rounds, requestTimeoutMs, benchmarkSalt }, results, summaries,
     containerStats,
     limitations: [
-      'This is a single-client AIMD run; compare with a fixed-window run using INITIAL=MIN=MAX.',
+      'This is a single-client run; compare mode=aimd with mode=fixed and the configured fixed concurrency.',
       'Container CPU and memory are sampled through docker stats; host-level CPU, disk latency, and GC latency are not collected.',
     ],
   }, null, 2));

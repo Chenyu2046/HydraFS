@@ -1,6 +1,8 @@
 #include "util_cgi.h"
 #include "dashscope_api.h"
 #include "faiss_wrapper.h"
+#include "object_reader.h"
+#include "storage_types.h"
 /**
  * @file knowledge_worker.cpp
  * @brief 知识层异步解析 worker（常驻后台进程，非 FastCGI）
@@ -28,6 +30,7 @@
 #include <curl/curl.h>
 #include <time.h>
 #include <ctype.h>
+#include <memory>
 
 extern "C" {
 #include "make_log.h"
@@ -53,6 +56,7 @@ static char web_server_ip[30] = {0};
 static char web_server_port[10] = {0};
 static char storage_web_server_ip[30] = {0};
 static char storage_web_server_port[10] = {0};
+static char storage_client_config[512] = {0};
 static char faiss_user_index_dir[512] = {0};
 static char faiss_lock_dir[512] = "/tmp/faiss_locks";
 /* DashScope API Key：cfg.json 优先（出厂可用） */
@@ -90,6 +94,7 @@ static void read_cfg()
     get_cfg_value(CFG_PATH, "web_server", "port", web_server_port);
     get_cfg_value(CFG_PATH, "storage_web_server", "ip", storage_web_server_ip);
     get_cfg_value(CFG_PATH, "storage_web_server", "port", storage_web_server_port);
+    get_cfg_value(CFG_PATH, "dfs_path", "client", storage_client_config);
     get_cfg_value(CFG_PATH, "dashscope", "api_key", dashscope_api_key);
 
     /* 自动双链阈值（可选） */
@@ -1088,7 +1093,7 @@ static int handle_task_failure(MYSQL *conn, long task_id, int retry_count,
 
 static int process_one_task(MYSQL *conn, long task_id, const char *user,
                             const char *md5, const char *task_type,
-                            int retry_count)
+                            int retry_count, hydrastore::ObjectReader *object_reader)
 {
     char db_url[512] = {0};
     char file_path[256] = {0};
@@ -1126,36 +1131,49 @@ static int process_one_task(MYSQL *conn, long task_id, const char *user,
 
     /* 获取文件类型 */
     char type[32] = {0};
+    char storage_mode[32] = {0};
     {
         char *esc_md5 = escape_mysql(conn, md5);
         if (esc_md5) {
             char sql[512] = {0};
-            snprintf(sql, sizeof(sql), "SELECT type FROM file_info WHERE md5='%s'", esc_md5);
+            snprintf(sql, sizeof(sql),
+                     "SELECT type,COALESCE(storage_mode,'legacy') FROM file_info WHERE md5='%s'",
+                     esc_md5);
             free(esc_md5);
             if (mysql_query(conn, sql) == 0) {
                 MYSQL_RES *res = mysql_store_result(conn);
                 if (res) {
                     MYSQL_ROW row = mysql_fetch_row(res);
                     if (row && row[0]) strncpy(type, row[0], sizeof(type) - 1);
+                    if (row && row[1]) strncpy(storage_mode, row[1], sizeof(storage_mode) - 1);
                     mysql_free_result(res);
                 }
             }
         }
     }
 
-    /* 2. 下载文件（图片不下载，直接用 URL 走 VL） */
+    /* 2. V2 manifest files are read directly from the storage data plane.
+     * Legacy records retain the historical HTTP path for compatibility. */
     int is_image = is_image_type(type);
-    if (!is_image) {
-        build_storage_download_url(db_url, download_url, sizeof(download_url));
-        if (strlen(download_url) == 0) {
-            LOG(UTIL_LOG_MODULE, UTIL_LOG_PROC, "empty download URL for md5=%.32s\n", md5);
-            handle_task_failure(conn, task_id, retry_count, "empty download URL");
-            return -1;
-        }
-        snprintf(file_path, sizeof(file_path), "/tmp/knowledge_%ld_%s", task_id, md5);
+    const bool manifest_object = strcasecmp(storage_mode, "manifest") == 0;
+    if (!is_image || manifest_object) {
+        snprintf(file_path, sizeof(file_path), "/tmp/knowledge_%ld", task_id);
         char download_err[1024] = {0};
-        if (download_file(download_url, file_path,
-                          download_err, sizeof(download_err)) != 0) {
+        int read_ok = 0;
+        if (manifest_object && object_reader) {
+            read_ok = object_reader->DownloadToFile(md5, user, file_path) ? 1 : 0;
+            if (!read_ok) snprintf(download_err, sizeof(download_err),
+                                   "manifest object reader failed for md5=%.32s", md5);
+        } else {
+            build_storage_download_url(db_url, download_url, sizeof(download_url));
+            if (strlen(download_url) > 0) {
+                read_ok = download_file(download_url, file_path,
+                                        download_err, sizeof(download_err)) == 0;
+            } else {
+                snprintf(download_err, sizeof(download_err), "empty download URL");
+            }
+        }
+        if (!read_ok) {
             LOG(UTIL_LOG_MODULE, UTIL_LOG_PROC, "%s\n",
                 strlen(download_err) > 0 ? download_err : "download failed");
             handle_task_failure(conn, task_id, retry_count,
@@ -1181,8 +1199,10 @@ static int process_one_task(MYSQL *conn, long task_id, const char *user,
             handle_task_failure(conn, task_id, retry_count, "no api key for VL");
             return -1;
         }
-        if (dashscope_describe_image(api_key_early, download_url,
-                                     vl_desc, sizeof(vl_desc)) != 0) {
+        const int describe_result = manifest_object
+            ? dashscope_describe_image_file(api_key_early, file_path, vl_desc, sizeof(vl_desc))
+            : dashscope_describe_image(api_key_early, download_url, vl_desc, sizeof(vl_desc));
+        if (describe_result != 0) {
             LOG(UTIL_LOG_MODULE, UTIL_LOG_PROC, "VL describe failed: %s\n", download_url);
             handle_task_failure(conn, task_id, retry_count, "VL describe failed");
             return -1;
@@ -1199,12 +1219,12 @@ static int process_one_task(MYSQL *conn, long task_id, const char *user,
 
     if (text_len <= 0) {
         LOG(UTIL_LOG_MODULE, UTIL_LOG_PROC, "text extraction failed for type=%s\n", type);
-        if (!is_image) remove(file_path);
+        if (!is_image || manifest_object) remove(file_path);
         /* 非致命：仍尝试用文件名作为描述 */
         snprintf(text_content, sizeof(text_content), "%s file", type);
         text_len = strlen(text_content);
     }
-    if (!is_image) remove(file_path);
+    if (!is_image || manifest_object) remove(file_path);
 
     /* 4. 生成描述 */
     {
@@ -1424,6 +1444,10 @@ int main()
     }
     mysql_query(conn, "set names utf8mb4");
 
+    std::unique_ptr<hydrastore::BlobStore> blobs =
+        hydrastore::MakeFastDFSBlobStore(storage_client_config);
+    hydrastore::ObjectReader object_reader(conn, blobs.get());
+
     /* 注册信号处理 */
     signal(SIGTERM, handle_signal);
     signal(SIGINT, handle_signal);
@@ -1452,7 +1476,10 @@ int main()
             if (mysql_ping(conn) != 0) {
                 mysql_close(conn);
                 conn = msql_conn(mysql_user, mysql_pwd, mysql_db);
-                if (conn) mysql_query(conn, "set names utf8mb4");
+                if (conn) {
+                    mysql_query(conn, "set names utf8mb4");
+                    object_reader.SetConnection(conn);
+                }
             }
             continue;
         }
@@ -1464,7 +1491,8 @@ int main()
         }
 
         /* 处理任务 */
-        if (process_one_task(conn, task_id, user, md5, task_type, retry_count) != 0) {
+        if (process_one_task(conn, task_id, user, md5, task_type, retry_count,
+                             &object_reader) != 0) {
             LOG(UTIL_LOG_MODULE, UTIL_LOG_PROC,
                 "task %ld failed\n", task_id);
         }

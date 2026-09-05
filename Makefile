@@ -226,10 +226,15 @@ $(ai): $(CGI_SRC_PATH)/ai_cgi.o \
 $(CGI_SRC_PATH)/knowledge_worker.o: $(CGI_SRC_PATH)/knowledge_worker.cpp
 	$(CXX) -c $< -o $@ $(CXXFLAGS) $(CPPLFAGS)
 
+$(COMMON_PATH)/storage_object_reader.o: $(COMMON_PATH)/storage_object_reader.cpp
+	$(CXX) -c $< -o $@ $(CXXFLAGS) $(CPPLFAGS)
+
 $(worker): $(CGI_SRC_PATH)/knowledge_worker.o \
 	   $(CGI_SRC_PATH)/dashscope_api.o \
 	   $(CGI_SRC_PATH)/faiss_wrapper.o \
 	   $(COMMON_PATH)/knowledge_task.o \
+	   $(COMMON_PATH)/storage_object_reader.o \
+	   $(COMMON_PATH)/storage_blob_store.o \
 	   $(COMMON_PATH)/make_log.o \
 	   $(COMMON_PATH)/cJSON.o \
 	   $(COMMON_PATH)/deal_mysql.o \

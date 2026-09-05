@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cctype>
 #include <cstdlib>
 #include <cstring>
 #include <iomanip>
@@ -29,6 +30,28 @@ std::string ToString(std::int64_t value) {
 
 bool IsReady(const std::string &state) {
     return state == "READY";
+}
+
+std::string FileSuffix(const std::string &filename) {
+    const std::size_t dot = filename.find_last_of('.');
+    if (dot == std::string::npos || dot + 1 >= filename.size()) return {};
+    std::string suffix = filename.substr(dot + 1);
+    if (suffix.size() > 31) return {};
+    for (char &ch : suffix) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    return suffix;
+}
+
+bool IsParseableType(const std::string &type) {
+    static const char *const types[] = {
+        "txt", "md", "csv", "json", "xml", "html", "htm", "log",
+        "c", "cpp", "h", "hpp", "py", "js", "ts", "jsx", "tsx",
+        "css", "java", "go", "rs", "rb", "php", "sh", "bat", "yaml", "yml",
+        "pdf", "png", "jpg", "jpeg", "gif", "bmp", "webp", nullptr
+    };
+    for (const char *candidate : types) {
+        if (candidate && type == candidate) return true;
+    }
+    return false;
 }
 
 long long NowSeconds() {
@@ -264,6 +287,39 @@ bool MetadataStore::ReadObjectInfo(UploadSession *session) {
         session->manifest_id = rows[0][2].empty() ? 0 : std::stoll(rows[0][2]);
         session->legacy_url = rows[0][3];
         if (session->storage_mode == "legacy") session->object_id.clear();
+    }
+    return true;
+}
+
+bool MetadataStore::ManifestMatchesUpload(std::int64_t manifest_id,
+                                          const std::string &upload_id) {
+    std::vector<std::vector<std::string>> manifest_meta;
+    std::vector<std::vector<std::string>> upload_meta;
+    if (!Query("SELECT total_size,chunk_count FROM object_manifest WHERE id=?",
+               {ToString(manifest_id)}, &manifest_meta) || manifest_meta.size() != 1 ||
+        !Query("SELECT size,chunk_count FROM upload_session WHERE id=?",
+               {upload_id}, &upload_meta) || upload_meta.size() != 1 ||
+        manifest_meta[0][0] != upload_meta[0][0] || manifest_meta[0][1] != upload_meta[0][1]) {
+        return false;
+    }
+
+    std::vector<std::vector<std::string>> manifest_parts;
+    std::vector<std::vector<std::string>> upload_parts;
+    if (!Query("SELECT mc.part_index,mc.size,c.sha256 FROM manifest_chunk mc "
+               "JOIN chunk_blob c ON c.id=mc.chunk_id WHERE mc.manifest_id=? "
+               "ORDER BY mc.part_index", {ToString(manifest_id)}, &manifest_parts) ||
+        !Query("SELECT part_index,size,sha256 FROM upload_part WHERE upload_id=? "
+               "ORDER BY part_index", {upload_id}, &upload_parts) ||
+        manifest_parts.size() != upload_parts.size()) {
+        return false;
+    }
+    for (std::size_t i = 0; i < manifest_parts.size(); ++i) {
+        if (manifest_parts[i].size() < 3 || upload_parts[i].size() < 3 ||
+            manifest_parts[i][0] != upload_parts[i][0] ||
+            manifest_parts[i][1] != upload_parts[i][1] ||
+            manifest_parts[i][2] != upload_parts[i][2]) {
+            return false;
+        }
     }
     return true;
 }
@@ -568,9 +624,9 @@ bool MetadataStore::Commit(const std::string &upload_id, const std::string &user
             if (DbFailpoint("after_ref_increment")) { rollback(); return false; }
         }
         if (!Exec("INSERT INTO file_info(md5,file_id,url,size,type,count,storage_mode,manifest_id,"
-                  "object_id,content_digest) VALUES(?,?,?,?,'',1,'manifest',?,?,?)",
+                  "object_id,content_digest) VALUES(?,?,?,?,?,1,'manifest',?,?,?)",
                   {session->content_digest, "", "/api/object/download?objectId=" + object_id,
-                   ToString(session->size), manifest_id,
+                   ToString(session->size), FileSuffix(session->filename), manifest_id,
                    object_id, session->content_digest})) {
             rollback(); return false;
         }
@@ -580,6 +636,17 @@ bool MetadataStore::Commit(const std::string &upload_id, const std::string &user
         session->storage_mode = file[0][1];
         session->legacy_url = file[0][5];
         if (session->storage_mode == "legacy") object_id.clear();
+        if (session->storage_mode == "manifest") {
+            if (manifest_id.empty() || !ManifestMatchesUpload(std::stoll(manifest_id), upload_id)) {
+                rollback(); return false;
+            }
+        } else {
+            std::vector<std::vector<std::string>> owned;
+            if (!Query("SELECT 1 FROM user_file_list WHERE user=? AND md5=? LIMIT 1 FOR UPDATE",
+                       {user, session->content_digest}, &owned) || owned.empty()) {
+                rollback(); return false;
+            }
+        }
         if (!Exec("UPDATE chunk_blob c JOIN upload_part p ON p.chunk_id=c.id SET "
                   "c.state='GC_PENDING',c.gc_after=DATE_ADD(NOW(),INTERVAL 1 HOUR),"
                   "c.owner_upload_id=NULL,c.lease_until=NULL WHERE p.upload_id=? "
@@ -602,6 +669,10 @@ bool MetadataStore::Commit(const std::string &upload_id, const std::string &user
     }
     if (!file.empty() && new_relation &&
         !Exec("UPDATE file_info SET count=count+1 WHERE id=?", {file[0][0]})) {
+        rollback(); return false;
+    }
+    if (!EnqueueParseTask(user, session->content_digest, FileSuffix(session->filename),
+                          "hydrastore_v2")) {
         rollback(); return false;
     }
     if (!Exec("UPDATE upload_session SET state='COMMITTED',object_id=?,manifest_id=? WHERE id=?",
@@ -793,6 +864,32 @@ bool MetadataStore::GetManifest(const std::string &object_id, const std::string 
         parts->push_back(std::move(part));
     }
     return true;
+}
+
+bool MetadataStore::GetManifestByDigest(const std::string &content_digest,
+                                        const std::string &user,
+                                        UploadSession *session,
+                                        std::vector<PartStatus> *parts) {
+    std::vector<std::vector<std::string>> rows;
+    if (!Query("SELECT f.object_id FROM file_info f JOIN user_file_list u "
+               "ON u.md5=f.md5 WHERE f.md5=? AND u.user=? AND "
+               "f.storage_mode='manifest' LIMIT 1", {content_digest, user}, &rows) ||
+        rows.size() != 1) {
+        return false;
+    }
+    return GetManifest(rows[0][0], user, session, parts);
+}
+
+bool MetadataStore::EnqueueParseTask(const std::string &user,
+                                     const std::string &content_digest,
+                                     const std::string &type,
+                                     const std::string &source) {
+    const std::string status = IsParseableType(type) ? "pending" : "skipped";
+    return Exec("INSERT INTO ai_parse_task(user,md5,task_type,source,status) "
+                "SELECT ?,?,'parse_file',?,? FROM DUAL WHERE NOT EXISTS ("
+                "SELECT 1 FROM ai_parse_task WHERE user=? AND md5=? "
+                "AND status IN ('pending','running'))",
+                {user, content_digest, source, status, user, content_digest});
 }
 
 bool MetadataStore::GetSharedManifest(const std::string &share_token,

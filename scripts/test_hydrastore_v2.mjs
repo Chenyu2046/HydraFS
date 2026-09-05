@@ -46,6 +46,15 @@ async function dbExec(sql) {
   ], { windowsHide: true, maxBuffer: 1024 * 1024 });
 }
 
+async function dbQuery(sql) {
+  assert.ok(process.env.HYDRA_DB_PASSWORD, 'HYDRA_DB_PASSWORD is required for DB assertions');
+  const { stdout } = await execFileAsync('docker', [
+    'exec', '-e', `MYSQL_PWD=${process.env.HYDRA_DB_PASSWORD}`, 'tc_fcgi_mysql',
+    'mysql', '-uroot', '-N', '-D', 'yuncunchu', '-e', sql,
+  ], { windowsHide: true, maxBuffer: 1024 * 1024 });
+  return stdout.trim();
+}
+
 async function initAs(data, requestUser, requestToken, extra = {}) {
   const part = { index: 0, size: data.length, sha256: sha256(data) };
   const result = await postAs('/api/object/init', {
@@ -65,8 +74,12 @@ async function init(data, extra = {}) {
 }
 
 async function putPart(session, payload = session.data) {
+  return putPartAs(session, payload, user, token);
+}
+
+async function putPartAs(session, payload, requestUser, requestToken) {
   const response = await fetch(`${baseUrl}/api/object/part?uploadId=${encodeURIComponent(session.uploadId)}&index=0&sha256=${session.part.sha256}`, {
-    method: 'POST', headers: { 'content-type': 'application/octet-stream', 'X-Upload-User': user, 'X-Upload-Token': token }, body: payload
+    method: 'POST', headers: { 'content-type': 'application/octet-stream', 'X-Upload-User': requestUser, 'X-Upload-Token': requestToken }, body: payload
   });
   return response.json();
 }
@@ -77,7 +90,10 @@ async function status(uploadId) { return post('/api/object/status', { uploadId }
 async function concurrentDedupAndDoubleCommit() {
   const data = bytes(1024, 11);
   const [a, b] = await Promise.all([init(data), init(data)]);
-  const [putA, putB] = await Promise.all([putPart(a), putPart(b)]);
+  const [putA, putB] = await Promise.all([
+    a.instant ? Promise.resolve({ code: 0 }) : putPart(a),
+    b.instant ? Promise.resolve({ code: 0 }) : putPart(b),
+  ]);
   assert.ok([0, 2].includes(putA.code) && [0, 2].includes(putB.code), JSON.stringify([putA, putB]));
   for (const session of [a, b]) {
     for (let i = 0; i < 20; i++) {
@@ -117,12 +133,17 @@ async function sameSessionConcurrentPart() {
   const data = bytes(4096, 37);
   const session = await init(data, { uploadId: `same-session-${Date.now()}` });
   const results = await Promise.all([putPart(session), putPart(session)]);
-  assert.equal(results.filter(result => result.code === 0).length, 1,
-    `two concurrent attempts both published: ${JSON.stringify(results)}`);
-  assert.equal(results.filter(result => result.code !== 0).length, 1,
-    `expected the stale attempt to be fenced: ${JSON.stringify(results)}`);
+  assert.ok(results.some(result => result.code === 0),
+    `concurrent part attempts did not publish: ${JSON.stringify(results)}`);
+  // code 0 from both requests is valid when the second request observes the
+  // already READY part; the invariant we need to protect is one physical blob.
+  assert.ok(results.every(result => [0, 1, 2].includes(result.code)),
+    `concurrent part attempt failed unexpectedly: ${JSON.stringify(results)}`);
   const committed = await commit(session.uploadId);
   assert.equal(committed.code, 0, JSON.stringify(committed));
+  assert.equal(await dbQuery(
+    `SELECT COUNT(*) FROM chunk_blob WHERE sha256='${session.part.sha256}' AND size=${data.length}`
+  ), '1', 'same-session race created duplicate physical blobs');
 }
 
 async function crossUserAuthorization() {
@@ -148,6 +169,95 @@ async function crossUserAuthorization() {
   });
   const shareBody = await shareResponse.json();
   assert.notEqual(shareBody.code, 0, 'foreign user shared an object they do not own');
+}
+
+async function crossUserCommitForgery() {
+  assert.ok(secondUser && secondToken, 'HYDRA_SECOND_USER and HYDRA_SECOND_TOKEN are required for auth isolation');
+  const secret = bytes(6144, 121);
+  const unrelated = bytes(6144, 127);
+  const owner = await init(secret, { filename: `owner-${Date.now()}.bin` });
+  if (!owner.instant) {
+    assert.equal((await putPart(owner)).code, 0);
+    const committed = await commit(owner.uploadId);
+    assert.equal(committed.code, 0, JSON.stringify(committed));
+    owner.objectId = committed.objectId;
+  }
+  assert.ok(owner.objectId, `owner init did not return objectId: ${JSON.stringify(owner)}`);
+  const digest = md5(secret);
+  const manifestBefore = await dbQuery(`SELECT COUNT(*) FROM object_manifest WHERE content_digest='${digest}'`);
+  const fileBefore = await dbQuery(`SELECT COUNT(*) FROM file_info WHERE md5='${digest}'`);
+  const forged = await initAs(unrelated, secondUser, secondToken, {
+    filename: `forged-${Date.now()}.bin`, md5: digest, contentDigest: digest,
+    uploadId: `forged-${Date.now()}`
+  });
+  assert.equal((await putPartAs(forged, unrelated, secondUser, secondToken)).code, 0);
+  const forgedCommit = await postAs('/api/object/commit', { uploadId: forged.uploadId }, secondUser, secondToken);
+  if (forgedCommit.code === 0) {
+    await postAs('/api/object/delete', { objectId: forgedCommit.objectId }, secondUser, secondToken);
+  }
+  assert.notEqual(forgedCommit.code, 0, `forged commit was accepted: ${JSON.stringify(forgedCommit)}`);
+  const relationCount = await dbQuery(
+    `SELECT COUNT(*) FROM user_file_list WHERE user='${secondUser}' AND md5='${digest}' AND file_name LIKE 'forged-%'`
+  );
+  assert.equal(relationCount, '0', 'forged commit created a private relation');
+  assert.equal(await dbQuery(`SELECT COUNT(*) FROM object_manifest WHERE content_digest='${digest}'`), manifestBefore,
+    'forged rollback leaked an object manifest');
+  assert.equal(await dbQuery(`SELECT COUNT(*) FROM file_info WHERE md5='${digest}'`), fileBefore,
+    'forged rollback leaked file metadata');
+  assert.equal(await dbQuery(`SELECT state FROM upload_session WHERE id='${forged.uploadId}'`), 'UPLOADING');
+  const privateResponse = await fetch(`${baseUrl}/api/object/download?objectId=${encodeURIComponent(owner.objectId)}`, {
+    headers: { 'X-Upload-User': secondUser, 'X-Upload-Token': secondToken }
+  });
+  const privateBody = await privateResponse.json();
+  assert.notEqual(privateBody.code, 0, 'forged user downloaded the owner object');
+}
+
+async function aiTaskAndManifestReadRegression() {
+  const runId = `${Date.now()}-${Math.random()}`;
+  const text = Buffer.from(`HydraStore V2 internal reader regression ${runId}\n[[Manifest]]\n`);
+  const textSession = await init(text, {
+    filename: `v2-regression-${Date.now()}.txt`, uploadId: `ai-txt-${Date.now()}`
+  });
+  assert.equal((await putPart(textSession)).code, 0);
+  const textCommit = await commit(textSession.uploadId);
+  assert.equal(textCommit.code, 0, JSON.stringify(textCommit));
+  const textDigest = md5(text);
+  assert.equal(await dbQuery(`SELECT type FROM file_info WHERE md5='${textDigest}'`), 'txt');
+  const textTask = await dbQuery(
+    `SELECT COUNT(*) FROM ai_parse_task WHERE user='${user}' AND md5='${textDigest}' AND source='hydrastore_v2'`
+  );
+  assert.equal(textTask, '1', 'V2 txt commit did not persist an AI task');
+  const textResponse = await fetch(
+    `${baseUrl}/api/object/download?objectId=${encodeURIComponent(textCommit.objectId)}`,
+    { headers: { 'X-Upload-User': user, 'X-Upload-Token': token } }
+  );
+  assert.equal(textResponse.status, 200);
+  assert.equal(md5(Buffer.from(await textResponse.arrayBuffer())), textDigest,
+    'manifest reconstruction changed txt content');
+
+  const pdf = Buffer.from(`%PDF-1.4\nHydraStore V2 PDF regression ${runId}\n`);
+  const pdfSession = await init(pdf, {
+    filename: `v2-regression-${Date.now()}.pdf`, uploadId: `ai-pdf-${Date.now()}`
+  });
+  assert.equal((await putPart(pdfSession)).code, 0);
+  assert.equal((await commit(pdfSession.uploadId)).code, 0);
+  const pdfDigest = md5(pdf);
+  assert.equal(await dbQuery(`SELECT type FROM file_info WHERE md5='${pdfDigest}'`), 'pdf');
+  assert.equal(await dbQuery(
+    `SELECT COUNT(*) FROM ai_parse_task WHERE user='${user}' AND md5='${pdfDigest}' AND source='hydrastore_v2'`
+  ), '1', 'V2 pdf commit did not persist an AI task');
+
+  const zip = Buffer.from(`PK\\x03\\x04 unsupported archive regression ${runId}`);
+  const zipSession = await init(zip, {
+    filename: `v2-regression-${Date.now()}.zip`, uploadId: `ai-zip-${Date.now()}`
+  });
+  assert.equal((await putPart(zipSession)).code, 0);
+  assert.equal((await commit(zipSession.uploadId)).code, 0);
+  const zipDigest = md5(zip);
+  assert.equal(await dbQuery(`SELECT type FROM file_info WHERE md5='${zipDigest}'`), 'zip');
+  assert.equal(await dbQuery(
+    `SELECT status FROM ai_parse_task WHERE user='${user}' AND md5='${zipDigest}' AND source='hydrastore_v2'`
+  ), 'skipped', 'unsupported zip was scheduled for parsing');
 }
 
 async function deleteRevokesShare() {
@@ -226,6 +336,8 @@ async function run() {
   await incompleteCommit();
   await sameSessionConcurrentPart();
   await crossUserAuthorization();
+  await crossUserCommitForgery();
+  await aiTaskAndManifestReadRegression();
   await deleteRevokesShare();
   await gcDeletingDoesNotStealUpload();
   console.log('PASS: concurrent dedup, duplicate commit, wrong-payload rejection, retry, incomplete commit, same-session fencing, cross-user auth/share isolation, delete/share revocation, GC deleting race');

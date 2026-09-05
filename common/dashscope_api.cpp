@@ -204,6 +204,59 @@ END:
     return ret;
 }
 
+int dashscope_describe_image_file(const char *api_key, const char *image_path,
+                                  char *out_desc, int max_len)
+{
+    if (!image_path) return -1;
+    FILE *file = fopen(image_path, "rb");
+    if (!file) return -1;
+    if (fseek(file, 0, SEEK_END) != 0) { fclose(file); return -1; }
+    long file_size = ftell(file);
+    if (file_size <= 0 || file_size > 16L * 1024L * 1024L || fseek(file, 0, SEEK_SET) != 0) {
+        fclose(file);
+        return -1;
+    }
+    unsigned char *data = (unsigned char *)malloc((size_t)file_size);
+    if (!data) { fclose(file); return -1; }
+    const size_t read_size = fread(data, 1, (size_t)file_size, file);
+    fclose(file);
+    if (read_size != (size_t)file_size) { free(data); return -1; }
+
+    const char table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const size_t encoded_size = ((read_size + 2) / 3) * 4;
+    char *encoded = (char *)malloc(encoded_size + 1);
+    if (!encoded) { free(data); return -1; }
+    size_t in = 0, out = 0;
+    while (in < read_size) {
+        const size_t remaining = read_size - in;
+        const unsigned int a = data[in++];
+        const bool has_b = remaining > 1;
+        const bool has_c = remaining > 2;
+        const unsigned int b = has_b ? data[in++] : 0;
+        const unsigned int c = has_c ? data[in++] : 0;
+        encoded[out++] = table[(a >> 2) & 63];
+        encoded[out++] = table[((a & 3) << 4) | (b >> 4)];
+        encoded[out++] = has_b ? table[((b & 15) << 2) | (c >> 6)] : '=';
+        encoded[out++] = has_c ? table[c & 63] : '=';
+    }
+    encoded[out] = '\0';
+    free(data);
+
+    const char *mime = "application/octet-stream";
+    const char *dot = strrchr(image_path, '.');
+    if (dot && strcasecmp(dot, ".png") == 0) mime = "image/png";
+    else if (dot && (strcasecmp(dot, ".jpg") == 0 || strcasecmp(dot, ".jpeg") == 0)) mime = "image/jpeg";
+    else if (dot && strcasecmp(dot, ".gif") == 0) mime = "image/gif";
+    else if (dot && strcasecmp(dot, ".webp") == 0) mime = "image/webp";
+    char *data_url = (char *)malloc(strlen(mime) + out + 32);
+    if (!data_url) { free(encoded); return -1; }
+    sprintf(data_url, "data:%s;base64,%s", mime, encoded);
+    const int result = dashscope_describe_image(api_key, data_url, out_desc, max_len);
+    free(data_url);
+    free(encoded);
+    return result;
+}
+
 /**
  * 调用 text-embedding-v3 获取文本向量
  */

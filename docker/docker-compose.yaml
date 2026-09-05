@@ -50,7 +50,7 @@ services:
     entrypoint: ["/bin/bash", "/migrations/migrate.sh"]
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "test", "-f", "/tmp/hydrastore-v2-migration-ready"]
+      test: ["CMD-SHELL", "kill -0 1 && test -f /tmp/hydrastore-v2-migration-ready && test \"$$(mysql -h \"$$MYSQL_HOST\" -u \"$$MYSQL_USER\" \"$$MYSQL_DATABASE\" -N -B -e \"SELECT checksum FROM schema_migration WHERE name='hydrastore_v2'\")\" = \"$$(sha256sum /migrations/hydra_v2.sql | awk '{print $$1}')\""]
       interval: 5s
       timeout: 3s
       retries: 12

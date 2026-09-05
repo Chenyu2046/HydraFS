@@ -22,7 +22,9 @@ last_checksum=''
 while true; do
     checksum=$(sha256sum /migrations/hydra_v2.sql | awk '{print $1}')
     if [ "$checksum" != "$last_checksum" ]; then
-        mysql -h "$MYSQL_HOST" -u "$MYSQL_USER" "$MYSQL_DATABASE" < /migrations/hydra_v2.sql
+        rm -f /tmp/hydrastore-v2-migration-ready
+        mysql --init-command="SET @hydrastore_v2_checksum='${checksum}'" \
+            -h "$MYSQL_HOST" -u "$MYSQL_USER" "$MYSQL_DATABASE" < /migrations/hydra_v2.sql
         last_checksum="$checksum"
         touch /tmp/hydrastore-v2-migration-ready
         echo "HydraStore V2 migration complete: $checksum"

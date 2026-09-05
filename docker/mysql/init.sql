@@ -9,6 +9,13 @@ FLUSH PRIVILEGES;
 
 USE `yuncunchu`;
 
+CREATE TABLE IF NOT EXISTS `schema_migration` (
+  `name` varchar(128) NOT NULL,
+  `checksum` char(64) NOT NULL,
+  `applied_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`name`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Applied schema migration checksums';
+
 DROP TABLE IF EXISTS `file_info`;
 CREATE TABLE `file_info` (
   `id` bigint(20) NOT NULL AUTO_INCREMENT COMMENT '文件序号，自动递增，主键',

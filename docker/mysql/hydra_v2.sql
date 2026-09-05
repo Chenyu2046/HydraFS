@@ -1,6 +1,14 @@
 -- Idempotent HydraStore V2 migration for both fresh and existing databases.
 USE `yuncunchu`;
 
+
+CREATE TABLE IF NOT EXISTS `schema_migration` (
+  `name` varchar(128) NOT NULL,
+  `checksum` char(64) NOT NULL,
+  `applied_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`name`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 CREATE TABLE IF NOT EXISTS `object_manifest` (
   `id` bigint(20) NOT NULL AUTO_INCREMENT,
   `object_id` varchar(64) NOT NULL,
@@ -140,3 +148,7 @@ DROP PROCEDURE hydrastore_v2_add_column;
 DROP PROCEDURE hydrastore_v2_add_index;
 DROP PROCEDURE hydrastore_v2_add_fk;
 DROP PROCEDURE hydrastore_v2_validate_legacy;
+
+INSERT INTO schema_migration(name, checksum)
+VALUES ('hydrastore_v2', COALESCE(@hydrastore_v2_checksum, 'UNSET'))
+ON DUPLICATE KEY UPDATE checksum=VALUES(checksum), applied_at=CURRENT_TIMESTAMP;

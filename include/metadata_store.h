@@ -44,8 +44,12 @@ public:
     bool GetManifest(const std::string &object_id, const std::string &user,
                      UploadSession *session,
                      std::vector<PartStatus> *parts);
+    bool GetManifestByDigest(const std::string &content_digest, const std::string &user,
+                             UploadSession *session, std::vector<PartStatus> *parts);
     bool GetSharedManifest(const std::string &share_token, UploadSession *session,
                            std::vector<PartStatus> *parts);
+    bool EnqueueParseTask(const std::string &user, const std::string &content_digest,
+                          const std::string &type, const std::string &source);
     bool ReconcileExpiredUploads();
     bool ClaimGc(std::vector<GcCandidate> *candidates, int limit);
     bool FinishGc(const GcCandidate &candidate, bool deleted, const std::string &error);
@@ -59,6 +63,7 @@ private:
     bool ReadStatuses(const std::string &upload_id, const std::string &current_upload_id,
                       std::vector<PartStatus> *statuses);
     bool ReadObjectInfo(UploadSession *session);
+    bool ManifestMatchesUpload(std::int64_t manifest_id, const std::string &upload_id);
     long long LastInsertId() const;
     unsigned long long AffectedRows() const;
     void Close();
