@@ -114,7 +114,9 @@ services:
     container_name: tc_hydrastore_gateway_1
     environment:
       STORAGE_GATEWAY_ONLY: "1"
-      STORAGE_GATEWAY_WORKERS: "8"
+      STORAGE_GATEWAY_WORKERS: "16"
+      HYDRA_GATEWAY_INSTANCE: "gateway-1"
+      HYDRA_TRACE_LOG: "/app/logs/storage_gateway.trace.log"
     networks:
       my_net:
         ipv4_address: 172.30.0.6
@@ -122,7 +124,7 @@ services:
     volumes:
       - ./nginx_fastdfs/client.conf:/etc/fdfs/client.conf
     healthcheck:
-      test: ["CMD-SHELL", "test \"$(pgrep -fc '[/]app/bin_cgi/storage_gateway')\" -ge 8"]
+      test: ["CMD-SHELL", "test \"$(pgrep -fc '[/]app/bin_cgi/storage_gateway')\" -ge 16"]
       interval: 10s
       timeout: 3s
       retries: 5
@@ -142,7 +144,9 @@ services:
     container_name: tc_hydrastore_gateway_2
     environment:
       STORAGE_GATEWAY_ONLY: "1"
-      STORAGE_GATEWAY_WORKERS: "8"
+      STORAGE_GATEWAY_WORKERS: "16"
+      HYDRA_GATEWAY_INSTANCE: "gateway-2"
+      HYDRA_TRACE_LOG: "/app/logs/storage_gateway.trace.log"
     networks:
       my_net:
         ipv4_address: 172.30.0.7
@@ -150,7 +154,7 @@ services:
     volumes:
       - ./nginx_fastdfs/client.conf:/etc/fdfs/client.conf
     healthcheck:
-      test: ["CMD-SHELL", "test \"$(pgrep -fc '[/]app/bin_cgi/storage_gateway')\" -ge 8"]
+      test: ["CMD-SHELL", "test \"$(pgrep -fc '[/]app/bin_cgi/storage_gateway')\" -ge 16"]
       interval: 10s
       timeout: 3s
       retries: 5

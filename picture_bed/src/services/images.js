@@ -1,4 +1,5 @@
 import { API_CONFIG } from '../config';
+import { AdaptiveConcurrencyController, retryDelayMs } from './concurrency_controller.mjs';
 import SparkMD5 from 'spark-md5';
 
 /**
@@ -111,17 +112,38 @@ const tryInstantUpload = async (file, user, md5) => {
 };
 
 const DEFAULT_CHUNK_UPLOAD_CONFIG = {
-  INITIAL_CONCURRENCY: 4,
+  MODE: 'adaptive',
+  INITIAL_CONCURRENCY: 8,
   MIN_CONCURRENCY: 4,
-  MAX_CONCURRENCY: 32,
+  MAX_CONCURRENCY: 16,
   TIMEOUT_MS: 30000,
-  MAX_RETRIES: 3
+  MAX_RETRIES: 3,
+  RETRY_BASE_MS: 200
 };
 
 const getChunkUploadConfig = () => ({
   ...DEFAULT_CHUNK_UPLOAD_CONFIG,
   ...(API_CONFIG.CHUNK_UPLOAD || {})
 });
+
+const validInteger = (value, fallback, minimum = 1) => {
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= minimum ? parsed : fallback;
+};
+
+const normalizeChunkUploadConfig = config => {
+  const initial = validInteger(config.INITIAL_CONCURRENCY, 8);
+  return {
+    ...config,
+    MODE: config.MODE === 'fixed' ? 'fixed' : 'adaptive',
+    INITIAL_CONCURRENCY: initial,
+    MIN_CONCURRENCY: Math.min(initial, validInteger(config.MIN_CONCURRENCY, 4)),
+    MAX_CONCURRENCY: Math.max(initial, validInteger(config.MAX_CONCURRENCY, 16)),
+    TIMEOUT_MS: validInteger(config.TIMEOUT_MS, 30000),
+    MAX_RETRIES: validInteger(config.MAX_RETRIES, 3, 0),
+    RETRY_BASE_MS: validInteger(config.RETRY_BASE_MS, 200, 0)
+  };
+};
 
 // V2 computes the legacy file digest and each CAS digest in one sequential scan.
 const calculateObjectDigests = async (file, chunkSize) => {
@@ -185,8 +207,6 @@ const calculateObjectDigests = async (file, chunkSize) => {
   });
 };
 
-const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
-
 const createAbortError = () => {
   const error = new Error('Upload canceled');
   error.name = 'AbortError';
@@ -224,58 +244,30 @@ const createTimeoutController = (timeoutMs, parentSignal) => {
   };
 };
 
-const createAimdWindow = (config) => {
-  const state = {
-    size: clamp(config.INITIAL_CONCURRENCY, config.MIN_CONCURRENCY, config.MAX_CONCURRENCY),
-    samples: []
+const waitForRetry = (delay, abortSignal) => new Promise((resolve, reject) => {
+  if (abortSignal?.aborted) {
+    reject(createAbortError());
+    return;
+  }
+  let timer;
+  const onAbort = () => {
+    clearTimeout(timer);
+    abortSignal?.removeEventListener('abort', onAbort);
+    reject(createAbortError());
   };
+  timer = setTimeout(() => {
+    abortSignal?.removeEventListener('abort', onAbort);
+    resolve();
+  }, delay);
+  abortSignal?.addEventListener('abort', onAbort, { once: true });
+});
 
-  const recordSample = (sample) => {
-    state.samples.push(sample);
-    if (state.samples.length > 16) {
-      state.samples.shift();
-    }
-  };
-
-  const decrease = () => {
-    state.size = clamp(Math.floor(state.size / 2), config.MIN_CONCURRENCY, config.MAX_CONCURRENCY);
-  };
-
-  const tune = (sample) => {
-    recordSample(sample);
-
-    const recent = state.samples;
-    const successSamples = recent.filter(item => item.success);
-    const failureRate = recent.filter(item => !item.success).length / recent.length;
-    const timeoutRate = recent.filter(item => item.timeout).length / recent.length;
-    const avgSuccessRtt = successSamples.length > 0
-      ? successSamples.reduce((sum, item) => sum + item.rtt, 0) / successSamples.length
-      : sample.rtt;
-    const degraded = failureRate > 0.2 || timeoutRate > 0.1 || sample.rtt > avgSuccessRtt * 2;
-
-    if (!sample.success || sample.timeout || degraded) {
-      decrease();
-      return;
-    }
-
-    const healthy = failureRate === 0 && timeoutRate === 0 && sample.rtt <= avgSuccessRtt * 1.5;
-    if (healthy) {
-      state.size = clamp(state.size + 1, config.MIN_CONCURRENCY, config.MAX_CONCURRENCY);
-    }
-  };
-
-  return {
-    get size() {
-      return state.size;
-    },
-    recordSuccess(rtt) {
-      tune({ success: true, timeout: false, rtt });
-    },
-    recordFailure(rtt, timeout) {
-      tune({ success: false, timeout, rtt });
-    }
-  };
-};
+const createAimdWindow = config => new AdaptiveConcurrencyController({
+  mode: config.MODE,
+  initial: config.INITIAL_CONCURRENCY,
+  min: config.MIN_CONCURRENCY,
+  max: config.MAX_CONCURRENCY
+});
 
 const uploadChunkWithRetry = async ({ file, chunkSize, md5, index, config, aimdWindow, abortSignal, uploadUrl: suppliedUrl, uploadHeaders }) => {
   const start = index * chunkSize;
@@ -302,20 +294,31 @@ const uploadChunkWithRetry = async ({ file, chunkSize, md5, index, config, aimdW
 
       const uploadData = await uploadRes.json();
       const rtt = Date.now() - startedAt;
-      if (uploadData.code === 0) {
-        aimdWindow.recordSuccess(rtt);
+      if (uploadRes.ok && uploadData.code === 0) {
+        aimdWindow.record({ success: true, rtt, status: uploadRes.status });
         return;
       }
 
       lastError = new Error(`分片 ${index} 上传失败`);
-      aimdWindow.recordFailure(rtt, false);
+      aimdWindow.record({ success: false, rtt, status: uploadRes.status, timeout: uploadRes.status === 408 });
+      const retryable = uploadRes.status === 408 || uploadRes.status === 429 || uploadRes.status >= 500;
+      if (retryable && attempt < config.MAX_RETRIES) {
+        const delay = retryDelayMs({ attempt, retryAfter: uploadRes.headers?.get?.('retry-after'), baseMs: config.RETRY_BASE_MS });
+        if (delay > 0) await waitForRetry(delay, abortSignal);
+      } else if (!retryable) {
+        break;
+      }
     } catch (error) {
       const rtt = Date.now() - startedAt;
       lastError = error;
-      aimdWindow.recordFailure(rtt, timeout.timedOut);
+      aimdWindow.record({ success: false, rtt, timeout: timeout.timedOut });
 
       if (abortSignal && abortSignal.aborted && !timeout.timedOut) {
         throw error;
+      }
+      if (attempt < config.MAX_RETRIES) {
+        const delay = retryDelayMs({ attempt, baseMs: config.RETRY_BASE_MS });
+        if (delay > 0) await waitForRetry(delay, abortSignal);
       }
     } finally {
       timeout.clear();
@@ -414,15 +417,40 @@ const uploadChunksWithAimd = async ({ file, md5, chunkSize, chunkCount, uploaded
 };
 
 const objectRequest = async (endpoint, user, body) => {
-  const response = await fetch(`${API_CONFIG.BASE_URL}${endpoint}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ...body, user: user.username, token: user.token })
-  });
-  const data = await response.json();
-  if (data.code === 4) throw makeTokenExpiredError();
-  if (data.code !== 0) throw new Error(data.msg || '对象存储请求失败');
-  return data;
+  const config = normalizeChunkUploadConfig(getChunkUploadConfig());
+  for (let attempt = 0; attempt <= config.MAX_RETRIES; attempt++) {
+    let response;
+    let data = {};
+    try {
+      const timeout = createTimeoutController(config.TIMEOUT_MS);
+      try {
+        response = await fetch(`${API_CONFIG.BASE_URL}${endpoint}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...body, user: user.username, token: user.token }),
+          signal: timeout.signal
+        });
+        data = await response.json().catch(() => ({}));
+      } finally {
+        timeout.clear();
+      }
+    } catch (error) {
+      if (attempt === config.MAX_RETRIES) throw error;
+      const delay = retryDelayMs({ attempt, baseMs: config.RETRY_BASE_MS });
+      if (delay > 0) await new Promise(resolve => setTimeout(resolve, delay));
+      continue;
+    }
+    if (data.code === 4) throw makeTokenExpiredError();
+    if (response.ok && data.code === 0) return data;
+    const retryable = response.status === 429 || response.status === 503;
+    if (!retryable || attempt === config.MAX_RETRIES) {
+      throw new Error(data.msg || '对象存储请求失败');
+    }
+    const delay = retryDelayMs({ attempt, retryAfter: response.headers?.get?.('retry-after'),
+      baseMs: config.RETRY_BASE_MS });
+    if (delay > 0) await new Promise(resolve => setTimeout(resolve, delay));
+  }
+  throw new Error('对象存储请求失败');
 };
 
 const objectUploadableParts = status => (

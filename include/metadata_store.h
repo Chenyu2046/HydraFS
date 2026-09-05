@@ -33,6 +33,9 @@ public:
     bool MarkPartReady(const std::string &upload_id, int part_index,
                        const std::string &owner_upload_id,
                        std::int64_t lease_epoch, const std::string &backend_file_id);
+    bool RecordPartBackend(const std::string &upload_id, int part_index,
+                           const std::string &owner_upload_id,
+                           std::int64_t lease_epoch, const std::string &backend_file_id);
     bool ClaimPartUpload(const std::string &upload_id, int part_index,
                          PartClaim *claim);
     bool MarkPartFailed(const std::string &upload_id, int part_index,

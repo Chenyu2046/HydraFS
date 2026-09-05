@@ -509,35 +509,63 @@ bool MetadataStore::MarkPartReady(const std::string &upload_id, int part_index,
     return ok;
 }
 
+bool MetadataStore::RecordPartBackend(const std::string &upload_id, int part_index,
+                                      const std::string &owner_upload_id,
+                                      std::int64_t lease_epoch,
+                                      const std::string &backend_file_id) {
+    if (backend_file_id.empty() || !Txn("START TRANSACTION")) return false;
+    std::vector<std::vector<std::string>> chunk;
+    bool ok = Query("SELECT chunk_id FROM upload_part WHERE upload_id=? AND part_index=? FOR UPDATE",
+                    {upload_id, ToString(part_index)}, &chunk) && chunk.size() == 1 &&
+              Exec("UPDATE chunk_blob SET backend_file_id=? WHERE id=? AND state='UPLOADING' "
+                   "AND owner_upload_id=? AND lease_epoch=? AND ref_count=0",
+                   {backend_file_id, chunk[0][0], owner_upload_id, ToString(lease_epoch)}) &&
+              AffectedRows() == 1 && Txn("COMMIT");
+    if (!ok) Txn("ROLLBACK");
+    return ok;
+}
+
 bool MetadataStore::ClaimPartUpload(const std::string &upload_id, int part_index,
                                     PartClaim *claim) {
     if (!claim) return false;
     *claim = PartClaim();
     if (!Txn("START TRANSACTION")) return false;
     std::vector<std::vector<std::string>> rows;
-    if (!Query("SELECT c.id,c.state,COALESCE(c.owner_upload_id,''),"
-               "COALESCE(UNIX_TIMESTAMP(c.lease_until),0),c.ref_count FROM upload_part p "
-               "JOIN chunk_blob c ON c.id=p.chunk_id WHERE p.upload_id=? AND p.part_index=?",
+    if (!Query("SELECT c.id,c.state,COALESCE(c.backend_file_id,''),"
+               "COALESCE(c.owner_upload_id,''),COALESCE(UNIX_TIMESTAMP(c.lease_until),0),"
+               "COALESCE(c.lease_epoch,0),c.ref_count FROM upload_part p "
+               "JOIN chunk_blob c ON c.id=p.chunk_id WHERE p.upload_id=? AND p.part_index=? FOR UPDATE",
                {upload_id, ToString(part_index)}, &rows) || rows.size() != 1) {
         Txn("ROLLBACK");
         return false;
     }
     const std::string &chunk_id = rows[0][0];
-    if ((rows[0][4] != "0" && rows[0][4] != "") || rows[0][1] == "READY") {
+    if ((rows[0][6] != "0" && rows[0][6] != "") || rows[0][1] == "READY") {
         Txn("ROLLBACK");
         return false;
     }
-    if (!Exec("UPDATE chunk_blob SET state='UPLOADING',owner_upload_id=?,"
-              "lease_until=DATE_ADD(NOW(),INTERVAL 15 MINUTE),lease_epoch=lease_epoch+1,"
-              "gc_after=NULL WHERE id=? AND ref_count=0 AND ("
-              "state IN ('FAILED','GC_PENDING') OR "
-              "(state='UPLOADING' AND (owner_upload_id=? OR lease_until IS NULL OR lease_until<NOW())))",
-              {upload_id, chunk_id, upload_id}) || AffectedRows() != 1) {
+    const long long lease = std::stoll(rows[0][4]);
+    const long long now = NowSeconds();
+    // A second request in the same session must not start another physical
+    // PUT while the first owner has not recorded a recoverable backend ID.
+    if (rows[0][1] == "UPLOADING" && rows[0][3] == upload_id &&
+        rows[0][2].empty() && lease >= now && rows[0][5] != "0") {
         Txn("ROLLBACK");
         return false;
+    }
+    if (!(rows[0][1] == "UPLOADING" && rows[0][3] == upload_id && !rows[0][2].empty())) {
+        if (!Exec("UPDATE chunk_blob SET state='UPLOADING',owner_upload_id=?,"
+                  "lease_until=DATE_ADD(NOW(),INTERVAL 15 MINUTE),lease_epoch=lease_epoch+1,"
+                  "gc_after=NULL WHERE id=? AND ref_count=0 AND ("
+                  "state IN ('FAILED','GC_PENDING') OR "
+                  "(state='UPLOADING' AND (owner_upload_id=? OR lease_until IS NULL OR lease_until<NOW())))",
+                  {upload_id, chunk_id, upload_id}) || AffectedRows() != 1) {
+            Txn("ROLLBACK");
+            return false;
+        }
     }
     std::vector<std::vector<std::string>> claimed;
-    if (!Query("SELECT id,state,lease_epoch FROM chunk_blob WHERE id=?", {chunk_id}, &claimed) ||
+    if (!Query("SELECT id,state,lease_epoch,COALESCE(backend_file_id,'') FROM chunk_blob WHERE id=?", {chunk_id}, &claimed) ||
         claimed.size() != 1 || !Txn("COMMIT")) {
         Txn("ROLLBACK");
         return false;
@@ -546,6 +574,7 @@ bool MetadataStore::ClaimPartUpload(const std::string &upload_id, int part_index
     claim->chunk_id = std::stoll(claimed[0][0]);
     claim->state = claimed[0][1];
     claim->lease_epoch = std::stoll(claimed[0][2]);
+    claim->backend_file_id = claimed[0][3];
     return true;
 }
 
@@ -556,8 +585,9 @@ bool MetadataStore::MarkPartFailed(const std::string &upload_id, int part_index,
     std::vector<std::vector<std::string>> chunk;
     bool ok = Query("SELECT chunk_id FROM upload_part WHERE upload_id=? AND part_index=? FOR UPDATE",
                     {upload_id, ToString(part_index)}, &chunk) && chunk.size() == 1 &&
-              Exec("UPDATE chunk_blob SET state='FAILED',owner_upload_id=NULL,lease_until=NULL,"
-                   "retry_count=retry_count+1 WHERE id=? AND owner_upload_id=? AND lease_epoch=?",
+              Exec("UPDATE chunk_blob SET state='FAILED',backend_file_id=NULL,owner_upload_id=NULL,"
+                   "lease_until=NULL,retry_count=retry_count+1 WHERE id=? AND owner_upload_id=? "
+                   "AND lease_epoch=?",
                    {chunk[0][0], owner_upload_id, ToString(lease_epoch)}) && AffectedRows() == 1 &&
               Exec("UPDATE upload_part SET state='MISSING' WHERE upload_id=? AND part_index=?",
                    {upload_id, ToString(part_index)}) && Txn("COMMIT");

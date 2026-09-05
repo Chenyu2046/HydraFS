@@ -17,7 +17,10 @@ class MockFileReader {
   }
 }
 
-const jsonResponse = (data) => ({
+const jsonResponse = (data, options = {}) => ({
+  ok: options.ok ?? true,
+  status: options.status ?? 200,
+  headers: { get: () => null },
   json: () => Promise.resolve(data)
 });
 
@@ -57,7 +60,8 @@ describe('uploadChunked AIMD scheduler', () => {
       MIN_CONCURRENCY: 4,
       MAX_CONCURRENCY: 32,
       TIMEOUT_MS: 1000,
-      MAX_RETRIES: 3
+      MAX_RETRIES: 3,
+      RETRY_BASE_MS: 0
     };
     jest.clearAllMocks();
   });
@@ -70,7 +74,7 @@ describe('uploadChunked AIMD scheduler', () => {
     delete global.fetch;
   });
 
-  test('starts with four chunk uploads and grows concurrency after healthy successes', async () => {
+  test('starts with the configured window and does not over-launch before cooldown growth', async () => {
     let activeUploads = 0;
     let maxActiveUploads = 0;
     let sawInitialFour = false;
@@ -113,7 +117,7 @@ describe('uploadChunked AIMD scheduler', () => {
     expect(result).toMatchObject({ instant: false, alreadyExists: false, md5: 'mock-md5' });
     expect(sawInitialFour).toBe(true);
     expect(exceededInitialBeforeFirstCompletion).toBe(false);
-    expect(maxActiveUploads).toBeGreaterThan(4);
+    expect(maxActiveUploads).toBe(4);
     expect(progress).toHaveBeenNthCalledWith(1, 0);
     expect(progress).toHaveBeenLastCalledWith(100);
     expect(progress).toHaveBeenCalledWith(90);
@@ -135,7 +139,7 @@ describe('uploadChunked AIMD scheduler', () => {
         const attempts = (attemptsByIndex.get(index) || 0) + 1;
         attemptsByIndex.set(index, attempts);
         if (index === 2 && attempts === 1) {
-          return Promise.resolve(jsonResponse({ code: 500, msg: 'temporary failure' }));
+          return Promise.resolve(jsonResponse({ code: 500, msg: 'temporary failure' }, { status: 503, ok: false }));
         }
         return Promise.resolve(jsonResponse({ code: 0 }));
       }
@@ -215,7 +219,7 @@ describe('uploadChunked AIMD scheduler', () => {
       }
       if (url.startsWith('/api/chunk_upload')) {
         uploadAttempts++;
-        return Promise.resolve(jsonResponse({ code: 500, msg: 'still failing' }));
+        return Promise.resolve(jsonResponse({ code: 500, msg: 'still failing' }, { status: 503, ok: false }));
       }
       if (url === '/api/chunk_merge') {
         return Promise.resolve(jsonResponse({ code: 0 }));

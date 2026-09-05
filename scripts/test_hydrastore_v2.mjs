@@ -112,12 +112,17 @@ async function concurrentDedupAndDoubleCommit() {
 }
 
 async function wrongPayloadAndRetry() {
-  const data = bytes(2048, 19);
+  // Random bytes avoid colliding with old deterministic fixtures and turning
+  // this into an accidental instant-hit happy path.
+  const data = crypto.randomBytes(2048);
   const session = await init(data);
-  const wrong = await putPart(session, bytes(data.length, 23));
+  assert.equal(session.instant, false, 'random fixture unexpectedly became an instant hit');
+  const wrong = await putPart(session, crypto.randomBytes(data.length));
   assert.notEqual(wrong.code, 0, 'same-size wrong SHA payload was accepted');
   const retry = await putPart(session, data);
   assert.equal(retry.code, 0, JSON.stringify(retry));
+  const wrongReadyRetry = await putPart(session, crypto.randomBytes(data.length));
+  assert.notEqual(wrongReadyRetry.code, 0, 'wrong payload was accepted for an already READY part');
   const duplicate = await putPart(session, data);
   assert.equal(duplicate.code, 0, JSON.stringify(duplicate));
 }

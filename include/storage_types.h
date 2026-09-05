@@ -47,6 +47,7 @@ struct PartClaim {
     std::int64_t chunk_id = 0;
     std::int64_t lease_epoch = 0;
     std::string state;
+    std::string backend_file_id;
 };
 
 struct UploadSession {

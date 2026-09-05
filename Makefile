@@ -239,6 +239,27 @@ $(CGI_BIN_PATH)/dashscope_mime_test: $(TEST_PATH)/dashscope_mime_test.cpp $(COMM
 test_dashscope_mime: $(CGI_BIN_PATH)/dashscope_mime_test
 	$(CGI_BIN_PATH)/dashscope_mime_test
 
+$(COMMON_PATH)/storage_query.o: $(COMMON_PATH)/storage_query.cpp
+	$(CXX) -c $< -o $@ $(CXXFLAGS) $(CPPLFAGS)
+
+$(CGI_BIN_PATH)/storage_query_test: $(TEST_PATH)/storage_query_test.cpp $(COMMON_PATH)/storage_query.o
+	$(CXX) $^ -o $@ $(CXXFLAGS) $(CPPLFAGS)
+
+test_storage_query: $(CGI_BIN_PATH)/storage_query_test
+	$(CGI_BIN_PATH)/storage_query_test
+
+$(CGI_BIN_PATH)/storage_resilience_test: $(TEST_PATH)/storage_resilience_test.cpp $(COMMON_PATH)/storage_resilience.o
+	$(CXX) $^ -o $@ $(CXXFLAGS) $(CPPLFAGS) -lhiredis
+
+test_storage_resilience: $(CGI_BIN_PATH)/storage_resilience_test
+	$(CGI_BIN_PATH)/storage_resilience_test
+
+$(CGI_BIN_PATH)/storage_metadata_lease_test: $(TEST_PATH)/storage_metadata_lease_test.cpp $(COMMON_PATH)/storage_metadata_store.o
+	$(CXX) $^ -o $@ $(CXXFLAGS) $(CPPLFAGS) -lmysqlclient -lpthread
+
+test_storage_metadata_lease: $(CGI_BIN_PATH)/storage_metadata_lease_test
+	$(CGI_BIN_PATH)/storage_metadata_lease_test
+
 $(worker): $(CGI_SRC_PATH)/knowledge_worker.o \
 	   $(COMMON_PATH)/image_mime.o \
 	   $(CGI_SRC_PATH)/dashscope_api.o \
@@ -269,6 +290,8 @@ $(COMMON_PATH)/storage_metadata_store.o: $(COMMON_PATH)/storage_metadata_store.c
 $(storage_gateway): $(CGI_SRC_PATH)/storage_gateway.o \
 	   $(COMMON_PATH)/storage_hash_util.o \
 	   $(COMMON_PATH)/storage_blob_store.o \
+	   $(COMMON_PATH)/storage_resilience.o \
+	   $(COMMON_PATH)/storage_query.o \
 	   $(COMMON_PATH)/storage_metadata_store.o \
 	   $(COMMON_PATH)/make_log.o \
 	   $(COMMON_PATH)/util_cgi.o \
@@ -276,6 +299,9 @@ $(storage_gateway): $(CGI_SRC_PATH)/storage_gateway.o \
 	   $(COMMON_PATH)/redis_op.o \
 	   $(COMMON_PATH)/cfg.o
 	$(CXX) $^ -o $@ $(LIBS)
+
+$(COMMON_PATH)/storage_resilience.o: $(COMMON_PATH)/storage_resilience.cpp
+	$(CXX) -c $< -o $@ $(CXXFLAGS) $(CPPLFAGS)
 
 $(CGI_SRC_PATH)/storage_gc_worker.o: $(CGI_SRC_PATH)/storage_gc_worker.cpp
 	$(CXX) -c $< -o $@ $(CXXFLAGS) $(CPPLFAGS)
@@ -301,5 +327,5 @@ clean:
 	-rm -rf *.o $(target) $(TEST_PATH)/*.o $(CGI_SRC_PATH)/*.o $(COMMON_PATH)/*.o
 
 # 声明伪文件
-.PHONY:clean ALL test_dashscope_mime
+.PHONY:clean ALL test_dashscope_mime test_storage_query test_storage_resilience
 #######################################################################
