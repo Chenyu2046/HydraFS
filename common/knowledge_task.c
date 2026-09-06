@@ -21,6 +21,7 @@ int is_parseable_type(const char *type) {
 
 int enqueue_knowledge_task(MYSQL *conn, const char *user, const char *md5,
                            const char *task_type, const char *source, int force) {
+    /* Terminal rows are deliberately reusable; the named lock still prevents force retries from duplicating active work. */
     (void)force;
     if (!conn || !user || !md5 || !task_type || !*task_type) return -1;
     const char *normalized_type = strcmp(task_type, "parse_file") == 0 ? "parse_source" : task_type;

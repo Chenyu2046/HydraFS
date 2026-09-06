@@ -12,7 +12,9 @@ namespace hydrastore {
 
 bool ParseAndValidateWikiPatch(const std::string &json,
                                const std::vector<std::int64_t> &allowed_chunks,
-                               WikiPatch *patch, std::string *error);
+                               WikiPatch *patch, std::string *error,
+                               const std::vector<std::string> &existing_page_keys = {},
+                               bool require_existing_page_keys = false);
 
 std::string NormalizeWikiPageKey(const std::string &title);
 
@@ -20,7 +22,8 @@ class WikiCompiler {
 public:
     WikiCompiler(const std::string &model, const std::string &compiler_version,
                  int embedding_dimension,
-                 const std::string &embedding_model = "text-embedding-v3");
+                 const std::string &embedding_model = "text-embedding-v3",
+                 const std::string &snapshot_root = "/data/faiss/users");
 
     bool Compile(KnowledgeStore *store, const KnowledgeTaskClaim &task,
                  const std::string &api_key, std::string *error);
@@ -29,6 +32,7 @@ private:
     std::string model_;
     std::string compiler_version_;
     std::string embedding_model_;
+    std::string snapshot_root_;
     int embedding_dimension_;
 };
 

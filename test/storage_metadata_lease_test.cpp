@@ -91,6 +91,7 @@ int main() {
     assert(store.Commit(upload_b, user, &session_b));
     assert(store.Abort(upload_a, user));
     assert(store.DeleteObjectForUser(session_b.object_id, user));
+    assert(Scalar(db, "SELECT COUNT(*) FROM ai_parse_task WHERE user='" + user + "' AND md5='" + digest + "' AND task_type='delete_source' AND status IN ('pending','running')") == "1");
 
     // The object delete above intentionally leaves a grace-period GC row. For
     // a deterministic test cleanup, remove only this fixture's rows after
@@ -100,6 +101,7 @@ int main() {
     assert(Raw(db, "DELETE FROM chunk_blob WHERE id=" + std::to_string(claim_b.chunk_id) +
                     " AND ref_count=0 AND NOT EXISTS (SELECT 1 FROM manifest_chunk WHERE chunk_id=" +
                     std::to_string(claim_b.chunk_id) + ")"));
+    assert(Raw(db, "DELETE FROM ai_parse_task WHERE user='" + user + "' AND md5='" + digest + "'"));
 
     const std::string upload_c = "lease-test-concurrent-" + suffix;
     hydrastore::UploadSession session_c;

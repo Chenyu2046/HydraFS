@@ -440,6 +440,8 @@ int del_file(char *user, char *md5, char *filename)
     int count = 0;
     int share = 0;  //共享状态
     int flag = 0; //标志redis是否有记录
+    int ai_transaction_active = 0;
+    int ai_index_dirty = 0;
 
     //连接redis数据库
     redis_conn = rop_connectdb_nopwd(redis_ip, redis_port);
@@ -550,6 +552,14 @@ int del_file(char *user, char *md5, char *filename)
 
     }
     LOG(DEALFILE_LOG_MODULE, DEALFILE_LOG_PROC,"%s %d share:%d\n", __FUNCTION__, __LINE__, share);
+    /* Bind the legacy relation deletion, AI cleanup, and durable task outbox. */
+    if (mysql_query(conn, "START TRANSACTION") != 0)
+    {
+        LOG(DEALFILE_LOG_MODULE, DEALFILE_LOG_PROC, "start delete transaction failed: %s\n", mysql_error(conn));
+        ret = -1;
+        goto END;
+    }
+    ai_transaction_active = 1;
     //用户文件数量-1
     //查询用户文件数量
     sprintf(sql_cmd, "select count from user_file_count where user = '%s'", user);
@@ -603,6 +613,12 @@ int del_file(char *user, char *md5, char *filename)
         ret = -1;
         goto END;
      }
+    if (mysql_affected_rows(conn) != 1)
+    {
+        LOG(DEALFILE_LOG_MODULE, DEALFILE_LOG_PROC, "user file relation already absent\n");
+        ret = -1;
+        goto END;
+    }
 
     /* 新知识层按用户引用异步失效，避免删除请求直接改写发布中的证据快照。 */
     if (enqueue_knowledge_task(conn, user, md5, "delete_source", "delete", 1) != 0)
@@ -623,8 +639,17 @@ int del_file(char *user, char *md5, char *filename)
 
     if ((int)mysql_affected_rows(conn) > 0)
     {
-        mark_user_index_dirty(user);
+        ai_index_dirty = 1;
     }
+
+    if (mysql_query(conn, "COMMIT") != 0)
+    {
+        LOG(DEALFILE_LOG_MODULE, DEALFILE_LOG_PROC, "commit delete transaction failed: %s\n", mysql_error(conn));
+        ret = -1;
+        goto END;
+    }
+    ai_transaction_active = 0;
+    if (ai_index_dirty) mark_user_index_dirty(user);
 
     /* 知识层清理：删除 Wiki 页面和双链关系 */
     sprintf(sql_cmd, "delete from wiki_page where user = '%s' and md5 = '%s'", user, md5);
@@ -701,6 +726,10 @@ int del_file(char *user, char *md5, char *filename)
 
 
 END:
+    if (ai_transaction_active && conn != NULL)
+    {
+        mysql_query(conn, "ROLLBACK");
+    }
     /*
     删除文件：
         成功：{"code":"013"}

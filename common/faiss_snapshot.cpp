@@ -62,7 +62,14 @@ bool FaissSnapshot::Build(const std::string &path, int dimension,
     flat.reserve(ids.size() * static_cast<std::size_t>(dimension));
     for (const auto &vector : vectors) {
         if (vector.size() != static_cast<std::size_t>(dimension)) return false;
-        flat.insert(flat.end(), vector.begin(), vector.end());
+        double norm = 0.0;
+        for (float value : vector) {
+            if (!std::isfinite(value)) return false;
+            norm += static_cast<double>(value) * value;
+        }
+        norm = std::sqrt(norm);
+        if (!std::isfinite(norm) || norm <= 0.0) return false;
+        for (float value : vector) flat.push_back(static_cast<float>(value / norm));
     }
     const std::filesystem::path target(path);
     std::error_code ec;
@@ -94,6 +101,14 @@ bool FaissSnapshot::Build(const std::string &path, int dimension,
         std::filesystem::remove(temporary, ec);
         return false;
     }
+    const std::filesystem::path parent = target.parent_path().empty()
+        ? std::filesystem::path(".") : target.parent_path();
+    const int directory_fd = open(parent.c_str(), O_RDONLY | O_DIRECTORY);
+    if (directory_fd < 0 || fsync(directory_fd) != 0) {
+        if (directory_fd >= 0) close(directory_fd);
+        return false;
+    }
+    close(directory_fd);
     return true;
 }
 

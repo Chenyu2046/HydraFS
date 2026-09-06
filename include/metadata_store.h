@@ -68,6 +68,10 @@ private:
                       std::vector<PartStatus> *statuses);
     bool ReadObjectInfo(UploadSession *session);
     bool ManifestMatchesUpload(std::int64_t manifest_id, const std::string &upload_id);
+    bool EnqueueKnowledgeTaskInTxn(const std::string &user,
+                                   const std::string &md5,
+                                   const std::string &task_type,
+                                   const std::string &source);
     long long LastInsertId() const;
     unsigned long long AffectedRows() const;
     void Close();

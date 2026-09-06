@@ -54,7 +54,15 @@
 	{
 		"index_path": "/data/faiss/index.bin",
 		"user_index_dir": "/data/faiss/users",
-		"id_map_path": "/data/faiss/id_map.json"
+		"id_map_path": "/data/faiss/id_map.json",
+		"search_cache_users": "8",
+		"search_min_score": "0.45"
+	},
+
+	"knowledge":
+	{
+		"extract_timeout_ms": "30000",
+		"max_extracted_bytes": "8388608"
 	}
 
 }

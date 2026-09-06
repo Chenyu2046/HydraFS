@@ -28,6 +28,7 @@ extern "C" {
 #include <memory>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <unistd.h>
 #include <vector>
 #include <signal.h>
@@ -38,6 +39,26 @@ namespace {
 volatile sig_atomic_t running = 1;
 
 void Stop(int) { running = 0; }
+
+class ScopedTempFile {
+public:
+    ScopedTempFile() = default;
+    explicit ScopedTempFile(std::string path) : path_(std::move(path)) {}
+    ~ScopedTempFile() { Reset({}); }
+
+    ScopedTempFile(const ScopedTempFile &) = delete;
+    ScopedTempFile &operator=(const ScopedTempFile &) = delete;
+
+    void Reset(std::string path) {
+        if (!path_.empty() && path_ != path) unlink(path_.c_str());
+        path_ = std::move(path);
+    }
+
+    const std::string &Path() const { return path_; }
+
+private:
+    std::string path_;
+};
 
 std::string Config(const char *section, const char *key, const char *fallback = "") {
     char value[1024] = {0};
@@ -158,9 +179,12 @@ bool ProcessSource(hydrastore::KnowledgeStore *store, const hydrastore::Knowledg
         if (skipped) *skipped = true;
         return false;
     }
-    const std::string local_path = "/tmp/hydra_ai_source_" + std::to_string(task.id);
-    source.local_path = local_path;
+    const std::string local_path = "/tmp/hydra_ai_source_" + std::to_string(task.id) +
+                                   "_" + std::to_string(static_cast<long long>(getpid()));
+    ScopedTempFile downloaded_source(local_path);
+    source.local_path = downloaded_source.Path();
     std::string error;
+    ScopedTempFile extracted_text;
     std::unique_ptr<hydrastore::BlobStore> blobs = hydrastore::MakeFastDFSBlobStore(storage_client.c_str());
     bool downloaded = false;
     if (!store->RenewTask(task)) return false;
@@ -173,54 +197,57 @@ bool ProcessSource(hydrastore::KnowledgeStore *store, const hydrastore::Knowledg
     }
     if (!downloaded) return false;
     if (!store->RenewTask(task)) {
-        unlink(local_path.c_str());
         return false;
     }
 
     hydrastore::ExtractedDocument document;
-    std::string extracted_path;
     if (IsImage(source.type)) {
         if (api_key.empty()) {
             if (retryable) *retryable = false;
-            unlink(local_path.c_str()); return false;
+            return false;
         }
         if (!store->RenewTask(task)) {
-            unlink(local_path.c_str()); return false;
+            return false;
         }
         char description[32768] = {0};
         const bool described = dashscope_describe_image_file_model(api_key.c_str(), vl_model.c_str(), local_path.c_str(), source.type.c_str(), description, sizeof(description)) == 0;
+        std::string extracted_path;
         if (!described || !store->RenewTask(task) || !WriteTempText(description, &extracted_path)) {
-            unlink(local_path.c_str()); return false;
+            return false;
         }
-        document.text_path = extracted_path;
+        extracted_text.Reset(extracted_path);
+        document.text_path = extracted_text.Path();
         document.extracted_bytes = static_cast<std::int64_t>(std::strlen(description));
     } else {
         if (!store->RenewTask(task)) {
-            unlink(local_path.c_str()); return false;
+            return false;
         }
-        if (!hydrastore::ExtractDocument(source, &document, &error)) {
+        hydrastore::ExtractorOptions extractor_options;
+        extractor_options.timeout_ms = std::max(1, std::atoi(Config("knowledge", "extract_timeout_ms", "30000").c_str()));
+        const long long configured_bytes = std::strtoll(Config("knowledge", "max_extracted_bytes", "8388608").c_str(), nullptr, 10);
+        if (configured_bytes > 0) extractor_options.max_output_bytes = static_cast<std::size_t>(configured_bytes);
+        if (!hydrastore::ExtractDocument(source, &document, &error, extractor_options)) {
             if (error == "unsupported document type" && skipped) *skipped = true;
-            unlink(local_path.c_str()); return false;
+            return false;
         }
+        extracted_text.Reset(document.text_path);
         if (!store->RenewTask(task)) {
-            unlink(local_path.c_str());
-            if (!extracted_path.empty()) unlink(extracted_path.c_str());
             return false;
         }
     }
     if (api_key.empty()) {
         if (retryable) *retryable = false;
-        unlink(local_path.c_str()); if (!extracted_path.empty()) unlink(extracted_path.c_str()); return false;
+        return false;
     }
     std::vector<hydrastore::EvidenceChunk> chunks;
     bool truncated = document.truncated;
     if (!hydrastore::ChunkDocumentFile(document.text_path, hydrastore::ChunkOptions(), &chunks, &truncated, &error) || chunks.empty()) {
         if (chunks.empty() && skipped) *skipped = true;
-        unlink(local_path.c_str()); if (!extracted_path.empty()) unlink(extracted_path.c_str()); return false;
+        return false;
     }
     std::int64_t generation = 0;
     if (!store->BeginEvidenceGeneration(source, &generation, &task)) {
-        unlink(local_path.c_str()); if (!extracted_path.empty()) unlink(extracted_path.c_str()); return false;
+        return false;
     }
     const char *fail_at = std::getenv("HYDRA_EMBED_FAIL_AT");
     const int fail_index = fail_at ? std::atoi(fail_at) : -1;
@@ -228,38 +255,36 @@ bool ProcessSource(hydrastore::KnowledgeStore *store, const hydrastore::Knowledg
     for (auto &chunk : chunks) {
         if (!store->RenewTask(task)) {
             store->AbortEvidenceGeneration(source, generation, "task lease lost", &task);
-            unlink(local_path.c_str()); if (!extracted_path.empty()) unlink(extracted_path.c_str()); return false;
+            return false;
         }
         if (index == fail_index || api_key.empty()) {
             if (retryable && api_key.empty()) *retryable = false;
             store->AbortEvidenceGeneration(source, generation, api_key.empty() ? "DashScope key is not configured" : "embedding failpoint", &task);
-            unlink(local_path.c_str()); if (!extracted_path.empty()) unlink(extracted_path.c_str()); return false;
+            return false;
         }
         std::vector<float> embedding(static_cast<std::size_t>(dimension), 0.0f);
         if (dashscope_get_embedding(api_key.c_str(), embedding_model.c_str(), chunk.content.c_str(), embedding.data(), dimension) != 0 ||
             !store->RenewTask(task)) {
             store->AbortEvidenceGeneration(source, generation, "embedding request failed", &task);
-            unlink(local_path.c_str()); if (!extracted_path.empty()) unlink(extracted_path.c_str()); return false;
+            return false;
         }
         Normalize(&embedding);
         if (!store->PutStagingChunk(source, generation, chunk, &chunk.id) || !store->PutVector(source.user, "chunk", chunk.id, embedding_model, dimension, embedding, nullptr)) {
             store->AbortEvidenceGeneration(source, generation, "evidence write failed", &task);
-            unlink(local_path.c_str()); if (!extracted_path.empty()) unlink(extracted_path.c_str()); return false;
+            return false;
         }
         ++index;
     }
     if (!store->PublishEvidenceGeneration(source, generation, static_cast<int>(chunks.size()), truncated, document.extracted_bytes, &task)) {
         store->AbortEvidenceGeneration(source, generation, "evidence publish failed", &task);
-        unlink(local_path.c_str()); if (!extracted_path.empty()) unlink(extracted_path.c_str()); return false;
+        return false;
     }
     const std::string source_text = ReadText(document.text_path, 4096);
     std::string summary = source_text.substr(0, std::min<std::size_t>(source_text.size(), 2048));
     store->UpdateLegacyAiRecord(source, source_text, summary, embedding_model);
     if (!store->EnqueueTask(source.user, source.md5, "compile_wiki", "evidence_ready", false)) {
-        unlink(local_path.c_str()); if (!extracted_path.empty()) unlink(extracted_path.c_str());
         return false;
     }
-    unlink(local_path.c_str()); if (!extracted_path.empty()) unlink(extracted_path.c_str());
     return true;
 }
 
@@ -276,14 +301,15 @@ bool ProcessTask(hydrastore::KnowledgeStore *store, const hydrastore::KnowledgeT
         std::string error; return store->DeleteSourceKnowledge(task.user, task.md5, &error);
     }
     if (task.task_type == "compile_wiki" || task.task_type == "repair_wiki") {
-        if (retryable && task.task_type == "compile_wiki" && api_key.empty()) *retryable = false;
+        if (retryable && api_key.empty()) *retryable = false;
         if (task.task_type == "compile_wiki") {
             bool source_exists = true;
             if (store->SourceRelationExists(task.user, task.md5, &source_exists) && !source_exists && retryable) {
                 *retryable = false;
             }
         }
-        hydrastore::WikiCompiler compiler(Config("dashscope", "wiki_model", "qwen-plus"), "wiki-compiler-v2", dimension, embedding_model);
+        hydrastore::WikiCompiler compiler(Config("dashscope", "wiki_model", "qwen-plus"), "wiki-compiler-v2", dimension,
+                                          embedding_model, Config("faiss", "user_index_dir", "/data/faiss/users"));
         std::string error;
         return compiler.Compile(store, task, api_key, &error);
     }

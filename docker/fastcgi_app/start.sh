@@ -3,6 +3,23 @@
 # FastDFS 客户端初始化需要其 base_path 在 chunk_merge 启动前存在。
 mkdir -p /fastdfs_data_and_log/client
 
+knowledge_pids=()
+index_pid=""
+stopping=0
+
+shutdown() {
+    stopping=1
+    for pid in "${knowledge_pids[@]}"; do
+        kill -TERM "$pid" 2>/dev/null || true
+    done
+    if [ -n "$index_pid" ]; then kill -TERM "$index_pid" 2>/dev/null || true; fi
+    pkill -TERM -f '[/]app/bin_cgi/(storage_gateway|knowledge_worker|knowledge_index_worker)' 2>/dev/null || true
+    for pid in "${knowledge_pids[@]}"; do wait "$pid" 2>/dev/null || true; done
+    if [ -n "$index_pid" ]; then wait "$index_pid" 2>/dev/null || true; fi
+    exit 0
+}
+trap shutdown TERM INT
+
 if [ "${STORAGE_GATEWAY_ONLY:-0}" = "1" ]; then
     echo -n "HydraStore Gateway："
     STORAGE_GATEWAY_WORKERS=${STORAGE_GATEWAY_WORKERS:-8}
@@ -73,20 +90,53 @@ echo -n "AI："
 AI_SEARCH_WORKERS=${AI_SEARCH_WORKERS:-4}
 spawn-fcgi -a 0.0.0.0 -p 10012 -F "$AI_SEARCH_WORKERS" -f /app/bin_cgi/ai
 
-# 知识层异步 worker（后台进程）
+# 知识层异步 worker（受 PID supervisor 管理）
 KNOWLEDGE_WORKERS=${KNOWLEDGE_WORKERS:-4}
 if [ "$KNOWLEDGE_WORKERS" -lt 1 ]; then KNOWLEDGE_WORKERS=1; fi
 if [ "$KNOWLEDGE_WORKERS" -gt 8 ]; then KNOWLEDGE_WORKERS=8; fi
+start_index_worker() {
+    /app/bin_cgi/knowledge_index_worker &
+    index_pid=$!
+}
+
+start_knowledge_worker() {
+    local slot="$1"
+    /app/bin_cgi/knowledge_worker &
+    knowledge_pids[$slot]=$!
+}
+
+is_live() {
+    local pid="$1"
+    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null || return 1
+    local state
+    state=$(ps -o stat= -p "$pid" 2>/dev/null || true)
+    case "$state" in Z*) return 1;; esac
+    return 0
+}
+
 echo -n "KnowledgeIndexWorker："
-/app/bin_cgi/knowledge_index_worker &
+start_index_worker
 echo "OK"
 echo -n "KnowledgeWorker(${KNOWLEDGE_WORKERS})："
 for worker_index in $(seq 1 "$KNOWLEDGE_WORKERS"); do
-    /app/bin_cgi/knowledge_worker &
+    start_knowledge_worker "$worker_index"
 done
 echo "OK"
 
 echo "所有 FastCGI 程序已启动"
 
-# 保持容器运行
-tail -f /dev/null
+while [ "$stopping" -eq 0 ]; do
+    if ! is_live "$index_pid"; then
+        wait "$index_pid" 2>/dev/null || true
+        echo "KnowledgeIndexWorker exited; restarting" >&2
+        start_index_worker
+    fi
+    for worker_index in $(seq 1 "$KNOWLEDGE_WORKERS"); do
+        if ! is_live "${knowledge_pids[$worker_index]:-}"; then
+            wait "${knowledge_pids[$worker_index]:-}" 2>/dev/null || true
+            echo "KnowledgeWorker slot ${worker_index} exited; restarting" >&2
+            start_knowledge_worker "$worker_index"
+        fi
+    done
+    sleep 2
+done

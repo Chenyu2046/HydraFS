@@ -2,7 +2,12 @@
 
 #include "hash_util.h"
 
+extern "C" {
+#include "knowledge_task.h"
+}
+
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <cstdlib>
 #include <map>
@@ -32,6 +37,21 @@ std::string Hex(const std::vector<float> &values) {
 bool Failpoint(const char *name) {
     const char *value = std::getenv("HYDRA_DB_FAILPOINT");
     return value && name && std::string(value) == name;
+}
+
+bool NormalizeEmbedding(const std::vector<float> &input, int dimension,
+                        std::vector<float> *output) {
+    if (!output || dimension <= 0 || input.size() != static_cast<std::size_t>(dimension)) return false;
+    double norm = 0.0;
+    for (float value : input) {
+        if (!std::isfinite(value)) return false;
+        norm += static_cast<double>(value) * value;
+    }
+    norm = std::sqrt(norm);
+    if (!std::isfinite(norm) || norm <= 0.0) return false;
+    *output = input;
+    for (float &value : *output) value = static_cast<float>(value / norm);
+    return true;
 }
 
 }  // namespace
@@ -220,24 +240,27 @@ bool KnowledgeStore::MarkWikiFailed(const KnowledgeTaskClaim &claim,
 }
 
 bool KnowledgeStore::RecoverExpiredTasks() {
-    return Exec("UPDATE ai_parse_task SET status='pending',worker_id=NULL,lease_until=NULL,"
-                "next_retry_at=NOW(),error_msg=CONCAT(COALESCE(error_msg,''),' lease expired') "
-                "WHERE status='running' AND lease_until IS NOT NULL AND lease_until<NOW()");
+    const bool retried = Exec(
+        "UPDATE ai_parse_task SET status='pending',worker_id=NULL,lease_until=NULL,"
+        "next_retry_at=DATE_ADD(NOW(),INTERVAL (CASE retry_count WHEN 0 THEN 5 WHEN 1 THEN 10 ELSE 20 END+"
+        "FLOOR(RAND()*(CASE retry_count WHEN 0 THEN 2 WHEN 1 THEN 3 ELSE 5 END))) SECOND),"
+        "retry_count=retry_count+1,finished_at=NULL,error_msg=CONCAT(COALESCE(error_msg,''),' lease expired'),"
+        "updated_at=NOW() WHERE status='running' AND lease_until IS NOT NULL AND lease_until<NOW()"
+        " AND retry_count<3");
+    if (!retried) return false;
+    return Exec(
+        "UPDATE ai_parse_task SET status='failed',worker_id=NULL,lease_until=NULL,next_retry_at=NULL,"
+        "retry_count=retry_count+1,finished_at=NOW(),error_msg=CONCAT(COALESCE(error_msg,''),"
+        "' lease expired retry budget exhausted'),updated_at=NOW() "
+        "WHERE status='running' AND lease_until IS NOT NULL AND lease_until<NOW() AND retry_count>=3");
 }
 
 bool KnowledgeStore::EnqueueTask(const std::string &user, const std::string &md5,
                                  const std::string &task_type, const std::string &source,
                                  bool force) {
-    if (!EnsureConnection() || user.empty() || md5.empty()) return false;
-    const std::string type = task_type == "parse_file" ? "parse_source" : task_type;
-    const std::string condition = force ? "" : " AND status NOT IN ('failed','success','skipped')";
-    const std::string sql =
-        "INSERT INTO ai_parse_task(user,md5,task_type,source,status,retry_count,next_retry_at) "
-        "SELECT '" + Escape(user) + "','" + Escape(md5) + "','" + Escape(type) + "','" +
-        Escape(source) + "','pending',0,NULL FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM ai_parse_task "
-        "WHERE user='" + Escape(user) + "' AND md5='" + Escape(md5) + "' AND task_type='" +
-        Escape(type) + "' AND status IN ('pending','running')" + condition + ")";
-    return Exec(sql);
+    if (!EnsureConnection() || user.empty() || md5.empty() || task_type.empty()) return false;
+    return enqueue_knowledge_task(connection_, user.c_str(), md5.c_str(), task_type.c_str(),
+                                  source.c_str(), force ? 1 : 0) == 0;
 }
 
 bool KnowledgeStore::LoadSourceObject(const std::string &user, const std::string &md5,
@@ -329,11 +352,12 @@ bool KnowledgeStore::PutStagingChunk(const SourceObject &source, std::int64_t ge
 bool KnowledgeStore::PutVector(const std::string &user, const std::string &source_type,
                                std::int64_t source_id, const std::string &model, int dimension,
                                const std::vector<float> &embedding, std::int64_t *vector_id) {
-    if (dimension <= 0 || embedding.size() != static_cast<std::size_t>(dimension)) return false;
+    std::vector<float> normalized;
+    if (!NormalizeEmbedding(embedding, dimension, &normalized)) return false;
     const std::string sql =
         "INSERT INTO knowledge_vector(user,source_type,source_id,model,dimension,embedding,status) VALUES('" +
         Escape(user) + "','" + Escape(source_type) + "'," + std::to_string(source_id) + ",'" + Escape(model) + "'," +
-        std::to_string(dimension) + ",UNHEX('" + Hex(embedding) + "'),'ACTIVE') ON DUPLICATE KEY UPDATE id=LAST_INSERT_ID(id),model=VALUES(model),dimension=VALUES(dimension),embedding=VALUES(embedding),status='ACTIVE'";
+        std::to_string(dimension) + ",UNHEX('" + Hex(normalized) + "'),'ACTIVE') ON DUPLICATE KEY UPDATE id=LAST_INSERT_ID(id),model=VALUES(model),dimension=VALUES(dimension),embedding=VALUES(embedding),status='ACTIVE'";
     if (!Exec(sql)) return false;
     if (vector_id) *vector_id = last_insert_id_;
     return last_insert_id_ > 0;
@@ -417,7 +441,7 @@ bool KnowledgeStore::LoadPublishedEvidence(const SourceObject &source, std::int6
     if (!Query("SELECT id,chunk_no,COALESCE(heading,''),content,content_sha256,start_offset,end_offset FROM knowledge_chunk WHERE user='" + Escape(source.user) + "' AND md5='" + Escape(source.md5) + "' AND generation=" + std::to_string(generation) + " AND state='PUBLISHED' ORDER BY chunk_no", &rows)) return false;
     chunks->clear();
     for (const auto &row : rows) if (row.size() >= 7) {
-        EvidenceChunk chunk; chunk.id=ToInt(row[0]); chunk.chunk_no=static_cast<int>(ToInt(row[1])); chunk.heading=row[2]; chunk.content=row[3]; chunk.content_sha256=row[4]; chunk.start_offset=ToInt(row[5]); chunk.end_offset=ToInt(row[6]); chunks->push_back(std::move(chunk));
+        EvidenceChunk chunk; chunk.id=ToInt(row[0]); chunk.source_md5=source.md5; chunk.chunk_no=static_cast<int>(ToInt(row[1])); chunk.heading=row[2]; chunk.content=row[3]; chunk.content_sha256=row[4]; chunk.start_offset=ToInt(row[5]); chunk.end_offset=ToInt(row[6]); chunks->push_back(std::move(chunk));
     }
     return true;
 }
@@ -475,7 +499,7 @@ bool KnowledgeStore::LoadActiveVectors(const std::string &user,
                                        std::vector<KnowledgeVectorRecord> *vectors) {
     if (!vectors) return false;
     std::vector<std::vector<std::string>> rows;
-    if (!Query("SELECT id,source_type,source_id,model,dimension,embedding FROM knowledge_vector v WHERE v.user='" + Escape(user) + "' AND v.status='ACTIVE' AND ((v.source_type='chunk' AND EXISTS (SELECT 1 FROM knowledge_chunk c WHERE c.user=v.user AND c.id=v.source_id AND c.state='PUBLISHED')) OR (v.source_type='wiki_revision' AND EXISTS (SELECT 1 FROM llm_wiki_revision r WHERE r.user=v.user AND r.id=v.source_id AND r.status='PUBLISHED'))) ORDER BY id", &rows)) return false;
+    if (!Query("SELECT id,source_type,source_id,model,dimension,embedding FROM knowledge_vector v WHERE v.user='" + Escape(user) + "' AND v.status='ACTIVE' AND ((v.source_type='chunk' AND EXISTS (SELECT 1 FROM knowledge_chunk c JOIN user_file_list u ON u.user=c.user AND u.md5=c.md5 WHERE c.user=v.user AND c.id=v.source_id AND c.state='PUBLISHED')) OR (v.source_type='wiki_revision' AND EXISTS (SELECT 1 FROM llm_wiki_revision r JOIN llm_wiki_page p ON p.user=r.user AND p.id=r.page_id AND p.current_revision_id=r.id AND p.status='ACTIVE' WHERE r.user=v.user AND r.id=v.source_id AND r.status='PUBLISHED'))) ORDER BY id", &rows)) return false;
     vectors->clear();
     for (const auto &row : rows) if (row.size() >= 6) {
         KnowledgeVectorRecord value; value.id=ToInt(row[0]); value.source_type=row[1]; value.source_id=ToInt(row[2]); value.model=row[3]; value.dimension=static_cast<int>(ToInt(row[4]));
@@ -485,12 +509,40 @@ bool KnowledgeStore::LoadActiveVectors(const std::string &user,
     return true;
 }
 
+bool KnowledgeStore::LoadVectorsForSources(
+    const std::string &user, const std::string &source_type,
+    const std::vector<std::int64_t> &source_ids,
+    std::vector<KnowledgeVectorRecord> *vectors) {
+    if (!vectors || (source_type != "chunk" && source_type != "wiki_revision")) return false;
+    vectors->clear();
+    if (source_ids.empty()) return true;
+    const std::string published_source = source_type == "chunk"
+        ? "EXISTS (SELECT 1 FROM knowledge_chunk c JOIN user_file_list u ON u.user=c.user AND u.md5=c.md5 WHERE c.user=v.user AND c.id=v.source_id AND c.state='PUBLISHED')"
+        : "EXISTS (SELECT 1 FROM llm_wiki_revision r JOIN llm_wiki_page p ON p.user=r.user AND p.id=r.page_id AND p.current_revision_id=r.id AND p.status='ACTIVE' WHERE r.user=v.user AND r.id=v.source_id AND r.status='PUBLISHED')";
+    const std::string sql =
+        "SELECT v.id,v.source_type,v.source_id,v.model,v.dimension,v.embedding FROM knowledge_vector v WHERE v.user='" +
+        Escape(user) + "' AND v.source_type='" + source_type + "' AND v.source_id IN (" + InList(source_ids) +
+        ") AND v.status='ACTIVE' AND " + published_source + " ORDER BY v.source_id";
+    std::vector<std::vector<std::string>> rows;
+    if (!Query(sql, &rows)) return false;
+    for (const auto &row : rows) if (row.size() >= 6) {
+        KnowledgeVectorRecord value;
+        value.id = ToInt(row[0]); value.source_type = row[1]; value.source_id = ToInt(row[2]);
+        value.model = row[3]; value.dimension = static_cast<int>(ToInt(row[4]));
+        if (value.dimension <= 0 || row[5].size() != static_cast<std::size_t>(value.dimension) * sizeof(float)) continue;
+        value.embedding.resize(static_cast<std::size_t>(value.dimension));
+        std::memcpy(value.embedding.data(), row[5].data(), row[5].size());
+        vectors->push_back(std::move(value));
+    }
+    return true;
+}
+
 bool KnowledgeStore::LoadSearchHydration(const std::string &user,
                                          const std::vector<std::int64_t> &vector_ids,
                                          std::vector<SearchHydration> *rows) {
     if (!rows) return false;
     std::vector<std::vector<std::string>> result;
-    if (!Query("SELECT v.id,v.source_type,v.source_id,COALESCE(c.md5,''),COALESCE(uf.file_name,''),COALESCE(f.type,''),COALESCE(f.size,0),COALESCE(f.url,''),COALESCE(c.chunk_no,0),COALESCE(c.content,''),COALESCE(p.page_key,''),COALESCE(p.title,''),COALESCE(r.id,0),COALESCE(r.summary,''),COALESCE(r.body_markdown,'') FROM knowledge_vector v LEFT JOIN knowledge_chunk c ON c.id=v.source_id AND v.source_type='chunk' AND c.user=v.user AND c.state='PUBLISHED' LEFT JOIN user_file_list uf ON uf.user=c.user AND uf.md5=c.md5 LEFT JOIN file_info f ON f.md5=c.md5 LEFT JOIN llm_wiki_revision r ON r.id=v.source_id AND v.source_type='wiki_revision' AND r.user=v.user AND r.status='PUBLISHED' LEFT JOIN llm_wiki_page p ON p.user=r.user AND p.id=r.page_id AND p.current_revision_id=r.id AND p.status='ACTIVE' WHERE v.user='" + Escape(user) + "' AND v.id IN (" + InList(vector_ids) + ") AND v.status='ACTIVE' AND ((v.source_type='chunk' AND c.id IS NOT NULL) OR (v.source_type='wiki_revision' AND r.id IS NOT NULL AND p.id IS NOT NULL))", &result)) return false;
+    if (!Query("SELECT v.id,v.source_type,v.source_id,COALESCE(c.md5,''),COALESCE(uf.file_name,''),COALESCE(f.type,''),COALESCE(f.size,0),COALESCE(f.url,''),COALESCE(c.chunk_no,0),COALESCE(c.content,''),COALESCE(p.page_key,''),COALESCE(p.title,''),COALESCE(r.id,0),COALESCE(r.summary,''),COALESCE(r.body_markdown,'') FROM knowledge_vector v LEFT JOIN knowledge_chunk c ON c.id=v.source_id AND v.source_type='chunk' AND c.user=v.user AND c.state='PUBLISHED' LEFT JOIN user_file_list uf ON uf.user=c.user AND uf.md5=c.md5 LEFT JOIN file_info f ON f.md5=c.md5 LEFT JOIN llm_wiki_revision r ON r.id=v.source_id AND v.source_type='wiki_revision' AND r.user=v.user AND r.status='PUBLISHED' LEFT JOIN llm_wiki_page p ON p.user=r.user AND p.id=r.page_id AND p.current_revision_id=r.id AND p.status='ACTIVE' WHERE v.user='" + Escape(user) + "' AND v.id IN (" + InList(vector_ids) + ") AND v.status='ACTIVE' AND ((v.source_type='chunk' AND c.id IS NOT NULL AND EXISTS (SELECT 1 FROM user_file_list u WHERE u.user=c.user AND u.md5=c.md5)) OR (v.source_type='wiki_revision' AND r.id IS NOT NULL AND p.id IS NOT NULL))", &result)) return false;
     rows->clear();
     for (const auto &row : result) if (row.size() >= 15) {
         SearchHydration value; value.vector_id=ToInt(row[0]); value.source_type=row[1]; value.source_id=ToInt(row[2]); value.md5=row[3]; value.filename=row[4]; value.type=row[5]; value.size=ToInt(row[6]); value.url=row[7]; value.chunk_no=static_cast<int>(ToInt(row[8])); value.snippet=row[9]; value.page_key=row[10]; value.title=row[11]; value.revision_id=ToInt(row[12]); value.summary=row[13]; value.body_markdown=row[14]; rows->push_back(std::move(value));
@@ -503,7 +555,7 @@ bool KnowledgeStore::LoadWikiClaims(const std::string &user,
                                     std::vector<WikiClaimView> *claims) {
     if (!claims) return false;
     std::vector<std::vector<std::string>> rows;
-    if (!Query("SELECT c.id,c.revision_id,c.text,c.confidence,COALESCE(k.md5,''),COALESCE(k.id,0) FROM llm_wiki_claim c LEFT JOIN llm_wiki_citation x ON x.claim_id=c.id AND x.user=c.user AND x.revision_id=c.revision_id AND x.state='ACTIVE' LEFT JOIN knowledge_chunk k ON k.id=x.chunk_id AND k.user=x.user AND k.state='PUBLISHED' WHERE c.user='" + Escape(user) + "' AND c.revision_id IN (" + InList(revision_ids) + ") AND c.status='ACTIVE' ORDER BY c.revision_id,c.ordinal,c.id", &rows)) return false;
+    if (!Query("SELECT c.id,c.revision_id,c.text,c.confidence,k.md5,k.id FROM llm_wiki_claim c JOIN llm_wiki_citation x ON x.claim_id=c.id AND x.user=c.user AND x.revision_id=c.revision_id AND x.state='ACTIVE' JOIN knowledge_chunk k ON k.id=x.chunk_id AND k.user=x.user AND k.state='PUBLISHED' WHERE c.user='" + Escape(user) + "' AND c.revision_id IN (" + InList(revision_ids) + ") AND c.status='ACTIVE' AND EXISTS (SELECT 1 FROM user_file_list u WHERE u.user=k.user AND u.md5=k.md5) ORDER BY c.revision_id,c.ordinal,c.id", &rows)) return false;
     claims->clear(); std::map<std::int64_t, std::size_t> positions;
     for (const auto &row : rows) if (row.size() >= 6) {
         const std::int64_t id = ToInt(row[0]);
@@ -527,7 +579,7 @@ bool KnowledgeStore::LoadWikiForSource(const std::string &user, const std::strin
                                        std::vector<WikiPageView> *pages) {
     if (!pages) return false;
     std::vector<std::vector<std::string>> rows;
-    if (!Query("SELECT p.id,p.page_key,p.title,r.id,r.summary,r.body_markdown FROM llm_wiki_page p JOIN llm_wiki_revision r ON r.id=p.current_revision_id AND r.status='PUBLISHED' WHERE p.user='" + Escape(user) + "' AND p.status='ACTIVE' AND EXISTS (SELECT 1 FROM llm_wiki_citation x JOIN knowledge_chunk k ON k.id=x.chunk_id AND k.state='PUBLISHED' WHERE x.user=p.user AND x.revision_id=r.id AND x.state='ACTIVE' AND k.user=p.user AND k.md5='" + Escape(md5) + "') ORDER BY p.title", &rows)) return false;
+    if (!Query("SELECT p.id,p.page_key,p.title,r.id,r.summary,r.body_markdown FROM llm_wiki_page p JOIN llm_wiki_revision r ON r.id=p.current_revision_id AND r.status='PUBLISHED' WHERE p.user='" + Escape(user) + "' AND p.status='ACTIVE' AND EXISTS (SELECT 1 FROM llm_wiki_citation x JOIN knowledge_chunk k ON k.id=x.chunk_id AND k.state='PUBLISHED' WHERE x.user=p.user AND x.revision_id=r.id AND x.state='ACTIVE' AND k.user=p.user AND k.md5='" + Escape(md5) + "' AND EXISTS (SELECT 1 FROM user_file_list u WHERE u.user=k.user AND u.md5=k.md5)) ORDER BY p.title", &rows)) return false;
     pages->clear(); std::vector<std::int64_t> revisions;
     for (const auto &row : rows) if (row.size() >= 6) { WikiPageView page; page.page_id=ToInt(row[0]); page.page_key=row[1]; page.title=row[2]; page.revision_id=ToInt(row[3]); page.summary=row[4]; page.body_markdown=row[5]; pages->push_back(std::move(page)); revisions.push_back(ToInt(row[3])); }
     std::vector<WikiClaimView> claims; if (!revisions.empty() && !LoadWikiClaims(user, revisions, &claims)) return false;
@@ -541,10 +593,20 @@ bool KnowledgeStore::LoadStaleWikiForSource(const std::string &user, const std::
                                             std::vector<WikiPageView> *pages) {
     if (!pages) return false;
     std::vector<std::vector<std::string>> rows;
-    if (!Query("SELECT p.id,p.page_key,p.title,r.id,r.summary,r.body_markdown FROM llm_wiki_page p JOIN llm_wiki_revision r ON r.id=p.current_revision_id AND r.status='PUBLISHED' WHERE p.user='" + Escape(user) + "' AND p.status='STALE' AND EXISTS (SELECT 1 FROM llm_wiki_citation x JOIN knowledge_chunk k ON k.id=x.chunk_id WHERE x.user=p.user AND x.revision_id=r.id AND k.user=p.user AND k.md5='" + Escape(md5) + "') ORDER BY p.title", &rows)) return false;
+    if (!Query("SELECT p.id,p.page_key,p.title,r.id,r.summary,r.body_markdown FROM llm_wiki_page p JOIN llm_wiki_revision r ON r.id=p.current_revision_id AND r.status='PUBLISHED' WHERE p.user='" + Escape(user) + "' AND p.status='STALE' AND EXISTS (SELECT 1 FROM llm_wiki_citation x JOIN knowledge_chunk k ON k.id=x.chunk_id WHERE x.user=p.user AND x.revision_id=r.id AND k.user=p.user AND k.md5='" + Escape(md5) + "') AND EXISTS (SELECT 1 FROM llm_wiki_citation surviving JOIN knowledge_chunk k2 ON k2.id=surviving.chunk_id AND k2.user=surviving.user WHERE surviving.user=r.user AND surviving.revision_id=r.id AND surviving.state='ACTIVE' AND k2.state='PUBLISHED' AND EXISTS (SELECT 1 FROM user_file_list u2 WHERE u2.user=k2.user AND u2.md5=k2.md5)) ORDER BY p.title", &rows)) return false;
     pages->clear();
+    std::vector<WikiCandidate> candidates;
     for (const auto &row : rows) if (row.size() >= 6) {
         WikiPageView page; page.page_id=ToInt(row[0]); page.page_key=row[1]; page.title=row[2]; page.revision_id=ToInt(row[3]); page.summary=row[4]; page.body_markdown=row[5]; pages->push_back(std::move(page));
+        candidates.push_back({ToInt(row[0]), row[1], row[2], ToInt(row[3]), row[4], row[5]});
+    }
+    if (!LoadWikiCandidateEvidence(user, &candidates)) return false;
+    for (auto &page : *pages) {
+        for (const auto &candidate : candidates) if (candidate.revision_id == page.revision_id) {
+            page.claims = candidate.claims;
+            page.evidence = candidate.evidence;
+            for (const auto &evidence : candidate.evidence) page.source_md5s.push_back(evidence.source_md5);
+        }
     }
     return true;
 }
@@ -553,7 +615,7 @@ bool KnowledgeStore::LoadBacklinks(const std::string &user, const std::string &m
                                    std::vector<BacklinkView> *links) {
     if (!links) return false;
     std::vector<std::vector<std::string>> rows;
-    if (!Query("SELECT DISTINCT COALESCE(l.src_md5,''),p.page_key,p.title,p.id FROM llm_wiki_link l JOIN llm_wiki_page p ON p.user=l.user AND p.page_key=l.src_page_key WHERE l.user='" + Escape(user) + "' AND l.status='ACTIVE' AND p.status='ACTIVE' AND (l.dst_md5='" + Escape(md5) + "' OR l.dst_page_key IN (SELECT p2.page_key FROM llm_wiki_page p2 JOIN llm_wiki_revision r2 ON r2.id=p2.current_revision_id AND r2.status='PUBLISHED' JOIN llm_wiki_citation c2 ON c2.revision_id=r2.id AND c2.user=p2.user AND c2.state='ACTIVE' JOIN knowledge_chunk k2 ON k2.id=c2.chunk_id AND k2.user=c2.user AND k2.state='PUBLISHED' WHERE p2.user='" + Escape(user) + "' AND k2.md5='" + Escape(md5) + "')) ORDER BY p.title", &rows)) return false;
+    if (!Query("SELECT DISTINCT COALESCE(l.src_md5,''),p.page_key,p.title,p.id FROM llm_wiki_link l JOIN llm_wiki_page p ON p.user=l.user AND p.page_key=l.src_page_key WHERE l.user='" + Escape(user) + "' AND l.status='ACTIVE' AND p.status='ACTIVE' AND EXISTS (SELECT 1 FROM user_file_list source_relation WHERE source_relation.user=l.user AND source_relation.md5='" + Escape(md5) + "') AND (l.dst_md5='" + Escape(md5) + "' OR l.dst_page_key IN (SELECT p2.page_key FROM llm_wiki_page p2 JOIN llm_wiki_revision r2 ON r2.id=p2.current_revision_id AND r2.status='PUBLISHED' JOIN llm_wiki_citation c2 ON c2.revision_id=r2.id AND c2.user=p2.user AND c2.state='ACTIVE' JOIN knowledge_chunk k2 ON k2.id=c2.chunk_id AND k2.user=c2.user AND k2.state='PUBLISHED' WHERE p2.user='" + Escape(user) + "' AND p2.status='ACTIVE' AND k2.md5='" + Escape(md5) + "' AND EXISTS (SELECT 1 FROM user_file_list target_relation WHERE target_relation.user=k2.user AND target_relation.md5=k2.md5))) ORDER BY p.title", &rows)) return false;
     links->clear(); for (const auto &row : rows) if (row.size() >= 4) links->push_back({row[0],row[2],row[1],row[2],ToInt(row[3])}); return true;
 }
 
@@ -561,7 +623,7 @@ bool KnowledgeStore::LoadRelated(const std::string &user, const std::string &md5
                                  std::vector<BacklinkView> *links) {
     if (!links) return false;
     std::vector<std::vector<std::string>> rows;
-    if (!Query("SELECT DISTINCT COALESCE(l.dst_md5,''),p.page_key,p.title,p.id FROM llm_wiki_link l JOIN llm_wiki_page p ON p.user=l.user AND p.page_key=l.dst_page_key WHERE l.user='" + Escape(user) + "' AND l.status='ACTIVE' AND p.status='ACTIVE' AND (l.src_md5='" + Escape(md5) + "' OR l.src_page_key IN (SELECT p2.page_key FROM llm_wiki_page p2 JOIN llm_wiki_revision r2 ON r2.id=p2.current_revision_id AND r2.status='PUBLISHED' JOIN llm_wiki_citation c2 ON c2.revision_id=r2.id AND c2.user=p2.user AND c2.state='ACTIVE' JOIN knowledge_chunk k2 ON k2.id=c2.chunk_id AND k2.user=c2.user AND k2.state='PUBLISHED' WHERE p2.user='" + Escape(user) + "' AND k2.md5='" + Escape(md5) + "')) ORDER BY p.title LIMIT 30", &rows)) return false;
+    if (!Query("SELECT DISTINCT COALESCE(l.dst_md5,''),p.page_key,p.title,p.id FROM llm_wiki_link l JOIN llm_wiki_page p ON p.user=l.user AND p.page_key=l.dst_page_key WHERE l.user='" + Escape(user) + "' AND l.status='ACTIVE' AND p.status='ACTIVE' AND EXISTS (SELECT 1 FROM user_file_list source_relation WHERE source_relation.user=l.user AND source_relation.md5='" + Escape(md5) + "') AND (l.src_md5='" + Escape(md5) + "' OR l.src_page_key IN (SELECT p2.page_key FROM llm_wiki_page p2 JOIN llm_wiki_revision r2 ON r2.id=p2.current_revision_id AND r2.status='PUBLISHED' JOIN llm_wiki_citation c2 ON c2.revision_id=r2.id AND c2.user=p2.user AND c2.state='ACTIVE' JOIN knowledge_chunk k2 ON k2.id=c2.chunk_id AND k2.user=c2.user AND k2.state='PUBLISHED' WHERE p2.user='" + Escape(user) + "' AND p2.status='ACTIVE' AND k2.md5='" + Escape(md5) + "' AND EXISTS (SELECT 1 FROM user_file_list target_relation WHERE target_relation.user=k2.user AND target_relation.md5=k2.md5))) ORDER BY p.title LIMIT 30", &rows)) return false;
     links->clear(); for (const auto &row : rows) if (row.size() >= 4) links->push_back({row[0],row[2],row[1],row[2],ToInt(row[3])}); return true;
 }
 
@@ -570,7 +632,8 @@ bool KnowledgeStore::LoadWikiCandidates(const std::string &user, int limit,
     if (!candidates) return false;
     std::vector<std::vector<std::string>> rows;
     if (!Query("SELECT p.id,p.page_key,p.title,r.id,r.summary,r.body_markdown FROM llm_wiki_page p JOIN llm_wiki_revision r ON r.id=p.current_revision_id AND r.status='PUBLISHED' WHERE p.user='" + Escape(user) + "' AND p.status='ACTIVE' ORDER BY p.updated_at DESC LIMIT " + std::to_string(std::max(1,std::min(limit,20))), &rows)) return false;
-    candidates->clear(); for (const auto &row : rows) if (row.size() >= 6) candidates->push_back({ToInt(row[0]),row[1],row[2],ToInt(row[3]),row[4],row[5]}); return true;
+    candidates->clear(); for (const auto &row : rows) if (row.size() >= 6) candidates->push_back({ToInt(row[0]),row[1],row[2],ToInt(row[3]),row[4],row[5]});
+    return LoadWikiCandidateEvidence(user, candidates);
 }
 
 bool KnowledgeStore::LoadWikiCandidatesByRevisionIds(
@@ -586,104 +649,219 @@ bool KnowledgeStore::LoadWikiCandidatesByRevisionIds(
         "AND r.status='PUBLISHED' WHERE p.user='" + Escape(user) + "' AND p.status='ACTIVE' AND r.user='" +
         Escape(user) + "' AND r.id IN (" + InList(revision_ids) + ") ORDER BY p.title";
     if (!Query(sql, &rows)) return false;
-    std::vector<std::int64_t> loaded_revisions;
     for (const auto &row : rows) if (row.size() >= 6) {
         candidates->push_back({ToInt(row[0]), row[1], row[2], ToInt(row[3]), row[4], row[5]});
-        loaded_revisions.push_back(ToInt(row[3]));
     }
+    return LoadWikiCandidateEvidence(user, candidates);
+}
+
+bool KnowledgeStore::LoadWikiCandidateEvidence(
+    const std::string &user, std::vector<WikiCandidate> *candidates) {
+    if (!candidates) return false;
+    std::vector<std::int64_t> revisions;
+    for (const auto &candidate : *candidates) revisions.push_back(candidate.revision_id);
     std::vector<WikiClaimView> claims;
-    if (!loaded_revisions.empty() && !LoadWikiClaims(user, loaded_revisions, &claims)) return false;
+    if (!revisions.empty() && !LoadWikiClaims(user, revisions, &claims)) return false;
+    std::vector<std::int64_t> chunk_ids;
+    for (const auto &claim : claims) {
+        for (const auto &citation : claim.citations) {
+            if (std::find(chunk_ids.begin(), chunk_ids.end(), citation.second) == chunk_ids.end()) {
+                chunk_ids.push_back(citation.second);
+            }
+        }
+    }
+    std::vector<std::vector<std::string>> rows;
+    if (!chunk_ids.empty() && !Query(
+        "SELECT k.id,k.md5,k.chunk_no,COALESCE(k.heading,''),k.content,k.content_sha256,k.start_offset,k.end_offset "
+        "FROM knowledge_chunk k WHERE k.user='" + Escape(user) + "' AND k.id IN (" + InList(chunk_ids) +
+        ") AND k.state='PUBLISHED' AND EXISTS (SELECT 1 FROM user_file_list u WHERE u.user=k.user AND u.md5=k.md5)",
+        &rows)) return false;
+    std::map<std::int64_t, EvidenceChunk> evidence_by_id;
+    for (const auto &row : rows) if (row.size() >= 8) {
+        EvidenceChunk evidence;
+        evidence.id = ToInt(row[0]); evidence.source_md5 = row[1]; evidence.chunk_no = static_cast<int>(ToInt(row[2]));
+        evidence.heading = row[3]; evidence.content = row[4]; evidence.content_sha256 = row[5];
+        evidence.start_offset = ToInt(row[6]); evidence.end_offset = ToInt(row[7]);
+        evidence_by_id[evidence.id] = std::move(evidence);
+    }
     for (auto &candidate : *candidates) {
-        for (const auto &claim : claims) if (claim.revision_id == candidate.revision_id) {
+        candidate.claims.clear(); candidate.active_claims.clear(); candidate.evidence.clear();
+        for (const auto &claim : claims) if (claim.revision_id == candidate.revision_id && !claim.citations.empty()) {
+            candidate.claims.push_back(claim);
             candidate.active_claims.push_back(claim.text);
+            for (const auto &citation : claim.citations) {
+                const auto evidence = evidence_by_id.find(citation.second);
+                if (evidence != evidence_by_id.end() && std::find_if(candidate.evidence.begin(), candidate.evidence.end(),
+                    [&](const EvidenceChunk &item) { return item.id == evidence->first; }) == candidate.evidence.end()) {
+                    candidate.evidence.push_back(evidence->second);
+                }
+            }
         }
     }
     return true;
 }
 
-bool KnowledgeStore::PublishWikiPatch(const std::string &user, const std::string &md5,
-                                      const WikiPatch &patch, const std::string &model,
-                                      const std::string &compiler_version,
-                                      const std::vector<float> &wiki_embedding,
-                                      int embedding_dimension, std::string *error,
-                                      const KnowledgeTaskClaim *claim) {
-    if (!BeginTransaction()) { if (error) *error="cannot begin wiki transaction"; return false; }
-    if (claim && !VerifyTaskLeaseInTransaction(*claim)) {
-        Rollback();
-        if (error) *error="task lease lost";
+bool KnowledgeStore::PublishWikiPatch(
+    const WikiPublishContext &context, const WikiPatch &patch,
+    const std::vector<WikiPageEmbedding> &embeddings,
+    const std::string &model, const std::string &compiler_version,
+    int embedding_dimension, std::string *error) {
+    if (context.user.empty() || (!context.repair_mode && context.trigger_md5.empty()) ||
+        !BeginTransaction()) {
+        if (error) *error = "cannot begin wiki transaction";
         return false;
     }
-    const std::string eu=Escape(user), em=Escape(md5);
-    if (!claim || claim->task_type != "repair_wiki") {
+    auto fail = [this, error](const char *message) {
+        Rollback();
+        if (error) *error = message;
+        return false;
+    };
+    if (context.task.id > 0 && !VerifyTaskLeaseInTransaction(context.task)) {
+        return fail("task lease lost");
+    }
+    const std::string eu = Escape(context.user);
+    const std::string em = Escape(context.trigger_md5);
+    if (!context.repair_mode) {
         std::vector<std::string> relation;
         if (!ReadSingle("SELECT 1 FROM user_file_list WHERE user='" + eu +
                         "' AND md5='" + em + "' FOR UPDATE", &relation)) {
-            Rollback();
-            if (error) *error="source relation is unavailable";
-            return false;
+            return fail("source relation is unavailable");
         }
     }
-    const std::string page_status = claim && claim->task_type == "repair_wiki" ? "STALE" : "ACTIVE";
-    for (const WikiPagePatch &page : patch.pages) {
-        if (!Exec("INSERT INTO llm_wiki_page(user,page_key,title,status) VALUES('" + eu + "','" + Escape(page.page_key) + "','" + Escape(page.title) + "','" + page_status + "') ON DUPLICATE KEY UPDATE title=VALUES(title),status='" + page_status + "'")) { Rollback(); if(error)*error="page upsert failed"; return false; }
-        std::vector<std::string> row;
-        if (!ReadSingle("SELECT id,COALESCE(current_revision_id,0) FROM llm_wiki_page WHERE user='" + eu + "' AND page_key='" + Escape(page.page_key) + "' FOR UPDATE", &row) || row.size()<2) { Rollback(); if(error)*error="page lock failed"; return false; }
-        const std::int64_t page_id=ToInt(row[0]), current=ToInt(row[1]);
-        if ((!page.has_base_revision && current != 0) ||
-            (page.has_base_revision && page.base_revision_id != current)) { Rollback(); if(error)*error="wiki revision conflict"; return false; }
-        if (!Exec("INSERT INTO llm_wiki_revision(user,page_id,base_revision_id,summary,body_markdown,compiler_version,model,status) VALUES('" + eu + "'," + std::to_string(page_id) + "," + std::to_string(current) + ",'" + Escape(page.summary) + "','" + Escape(page.body_markdown) + "','" + Escape(compiler_version) + "','" + Escape(model) + "','STAGING')")) { Rollback(); if(error)*error="revision insert failed"; return false; }
-        const std::int64_t revision=last_insert_id_;
-        int ordinal = 0;
-        for (const WikiClaimPatch &claim : page.claims) {
-            if (!Exec("INSERT INTO llm_wiki_claim(user,page_id,revision_id,ordinal,text,confidence,status) VALUES('" + eu + "'," + std::to_string(page_id) + "," + std::to_string(revision) + "," + std::to_string(ordinal++) + ",'" + Escape(claim.text) + "'," + std::to_string(claim.confidence) + ",'ACTIVE')")) { Rollback(); if(error)*error="claim insert failed"; return false; }
-            const std::int64_t claim_id=last_insert_id_;
-            for (std::int64_t chunk_id : claim.citations) {
-                std::vector<std::string> chunk;
-                if (!ReadSingle("SELECT md5 FROM knowledge_chunk WHERE id=" + std::to_string(chunk_id) + " AND user='" + eu + "' AND md5='" + em + "' AND state='PUBLISHED'", &chunk)) { Rollback(); if(error)*error="citation is not an active source chunk"; return false; }
-                if (!Exec("INSERT INTO llm_wiki_citation(user,claim_id,revision_id,chunk_id,state) VALUES('" + eu + "'," + std::to_string(claim_id) + "," + std::to_string(revision) + "," + std::to_string(chunk_id) + ",'ACTIVE')")) { Rollback(); if(error)*error="citation insert failed"; return false; }
+    if (patch.pages.empty()) {
+        if (context.repair_mode) return fail("repair patch has no page");
+        if (!context.repair_mode &&
+            !Exec("UPDATE knowledge_document SET wiki_state='READY',last_error=NULL,updated_at=NOW() WHERE user='" +
+                  eu + "' AND md5='" + em + "' AND evidence_state<>'DELETED'")) {
+            return fail("wiki state update failed");
+        }
+        for (const WikiLinkPatch &link : patch.links) {
+            if (!Exec("INSERT INTO llm_wiki_link(user,src_page_key,dst_page_key,src_md5,relation,status) VALUES('" + eu + "','" +
+                      Escape(link.src_page_key) + "','" + Escape(link.dst_page_key) + "','" + em + "','" +
+                      Escape(link.relation) + "','ACTIVE') ON DUPLICATE KEY UPDATE relation=VALUES(relation),src_md5=VALUES(src_md5),status='ACTIVE'")) {
+                return fail("wiki link insert failed");
             }
         }
-        if (Failpoint("wiki_after_claim")) { Rollback(); if(error)*error="wiki failpoint"; return false; }
+        if (!MarkIndexDirty(context.user)) return fail("index dirty update failed");
+        if (!Commit()) return fail("wiki transaction commit failed");
+        return true;
+    }
+    std::map<std::string, std::vector<float>> normalized_embeddings;
+    for (const auto &embedding : embeddings) {
+        std::vector<float> normalized;
+        if (!NormalizeEmbedding(embedding.values, embedding_dimension, &normalized) ||
+            !normalized_embeddings.emplace(embedding.page_key, std::move(normalized)).second) {
+            return fail("wiki page embedding is invalid");
+        }
+    }
+    for (const WikiPagePatch &page : patch.pages) {
+        const auto embedding = normalized_embeddings.find(page.page_key);
+        if (embedding == normalized_embeddings.end()) return fail("wiki page embedding is missing");
+        if (!Exec("INSERT INTO llm_wiki_page(user,page_key,title,status) VALUES('" + eu + "','" +
+                  Escape(page.page_key) + "','" + Escape(page.title) + "','ACTIVE') ON DUPLICATE KEY UPDATE title=VALUES(title),status='ACTIVE'")) {
+            return fail("page upsert failed");
+        }
+        std::vector<std::string> row;
+        if (!ReadSingle("SELECT id,COALESCE(current_revision_id,0) FROM llm_wiki_page WHERE user='" + eu +
+                        "' AND page_key='" + Escape(page.page_key) + "' FOR UPDATE", &row) || row.size() < 2) {
+            return fail("page lock failed");
+        }
+        const std::int64_t page_id = ToInt(row[0]);
+        const std::int64_t current = ToInt(row[1]);
+        if ((!page.has_base_revision && current != 0) ||
+            (page.has_base_revision && page.base_revision_id != current)) {
+            return fail("wiki revision conflict");
+        }
+        if (!Exec("INSERT INTO llm_wiki_revision(user,page_id,base_revision_id,summary,body_markdown,compiler_version,model,status) VALUES('" +
+                  eu + "'," + std::to_string(page_id) + "," + std::to_string(current) + ",'" +
+                  Escape(page.summary) + "','" + Escape(page.body_markdown) + "','" + Escape(compiler_version) +
+                  "','" + Escape(model) + "','STAGING')")) {
+            return fail("revision insert failed");
+        }
+        const std::int64_t revision = last_insert_id_;
+        int ordinal = 0;
+        for (const WikiClaimPatch &wiki_claim : page.claims) {
+            if (!Exec("INSERT INTO llm_wiki_claim(user,page_id,revision_id,ordinal,text,confidence,status) VALUES('" + eu + "'," +
+                      std::to_string(page_id) + "," + std::to_string(revision) + "," + std::to_string(ordinal++) +
+                      ",'" + Escape(wiki_claim.text) + "'," + std::to_string(wiki_claim.confidence) + ",'ACTIVE')")) {
+                return fail("claim insert failed");
+            }
+            const std::int64_t claim_id = last_insert_id_;
+            for (const std::int64_t chunk_id : wiki_claim.citations) {
+                if (std::find(context.allowed_chunk_ids.begin(), context.allowed_chunk_ids.end(), chunk_id) ==
+                    context.allowed_chunk_ids.end()) return fail("citation is not an allowed evidence chunk");
+                std::vector<std::string> chunk;
+                if (!ReadSingle("SELECT 1 FROM knowledge_chunk k WHERE k.id=" + std::to_string(chunk_id) +
+                                " AND k.user='" + eu + "' AND k.state='PUBLISHED' AND EXISTS (SELECT 1 FROM user_file_list u WHERE u.user=k.user AND u.md5=k.md5)", &chunk)) {
+                    return fail("citation is not an active source chunk");
+                }
+                if (!Exec("INSERT INTO llm_wiki_citation(user,claim_id,revision_id,chunk_id,state) VALUES('" + eu + "'," +
+                          std::to_string(claim_id) + "," + std::to_string(revision) + "," + std::to_string(chunk_id) + ",'ACTIVE')")) {
+                    return fail("citation insert failed");
+                }
+            }
+        }
+        if (Failpoint("wiki_after_claim")) return fail("wiki failpoint");
         if (!Exec("UPDATE knowledge_vector v JOIN llm_wiki_revision old_r ON old_r.id=v.source_id AND v.source_type='wiki_revision' SET v.status='INACTIVE' WHERE v.user='" + eu + "' AND old_r.page_id=" + std::to_string(page_id) + " AND old_r.status='PUBLISHED'") ||
             !Exec("UPDATE llm_wiki_revision SET status='SUPERSEDED' WHERE page_id=" + std::to_string(page_id) + " AND status='PUBLISHED'") ||
             !Exec("UPDATE llm_wiki_revision SET status='PUBLISHED',published_at=NOW() WHERE id=" + std::to_string(revision) + " AND status='STAGING'") ||
-            !Exec("UPDATE llm_wiki_page SET current_revision_id=" + std::to_string(revision) + ",updated_at=NOW(),status='" + page_status + "' WHERE id=" + std::to_string(page_id) + " AND user='" + eu + "'")) { Rollback(); if(error)*error="wiki publish failed"; return false; }
-        if (Failpoint("wiki_before_publish")) { Rollback(); if(error)*error="wiki failpoint"; return false; }
-        if (!wiki_embedding.empty() && !PutVector(user,"wiki_revision",revision,model,embedding_dimension,wiki_embedding,nullptr)) {
-            Rollback(); if (error) *error="wiki vector insert failed"; return false;
+            !Exec("UPDATE llm_wiki_page SET current_revision_id=" + std::to_string(revision) + ",updated_at=NOW(),status='ACTIVE' WHERE id=" + std::to_string(page_id) + " AND user='" + eu + "'")) {
+            return fail("wiki publish failed");
         }
+        if (Failpoint("wiki_before_publish")) return fail("wiki failpoint");
+        if (!PutVector(context.user, "wiki_revision", revision, model, embedding_dimension,
+                       embedding->second, nullptr)) return fail("wiki vector insert failed");
     }
     for (const WikiLinkPatch &link : patch.links) {
-        if (!Exec("INSERT INTO llm_wiki_link(user,src_page_key,dst_page_key,src_md5,relation,status) VALUES('" + eu + "','" + Escape(link.src_page_key) + "','" + Escape(link.dst_page_key) + "','" + em + "','" + Escape(link.relation) + "','ACTIVE') ON DUPLICATE KEY UPDATE relation=VALUES(relation),src_md5=VALUES(src_md5),status='ACTIVE'")) { Rollback(); if(error)*error="wiki link insert failed"; return false; }
+        if (!Exec("INSERT INTO llm_wiki_link(user,src_page_key,dst_page_key,src_md5,relation,status) VALUES('" + eu + "','" +
+                  Escape(link.src_page_key) + "','" + Escape(link.dst_page_key) + "','" +
+                  (context.repair_mode ? std::string() : em) + "','" + Escape(link.relation) +
+                  "','ACTIVE') ON DUPLICATE KEY UPDATE relation=VALUES(relation),src_md5=VALUES(src_md5),status='ACTIVE'")) {
+            return fail("wiki link insert failed");
+        }
     }
-    if (!Exec("UPDATE knowledge_document SET wiki_state='READY',last_error=NULL,updated_at=NOW() WHERE user='" + eu + "' AND md5='" + em + "' AND evidence_state<>'DELETED'") || !MarkIndexDirty(user) || !Commit()) { Rollback(); if(error)*error="wiki transaction commit failed"; return false; }
+    if (!context.repair_mode &&
+        (!Exec("UPDATE knowledge_document SET wiki_state='READY',last_error=NULL,updated_at=NOW() WHERE user='" + eu +
+               "' AND md5='" + em + "' AND evidence_state<>'DELETED'"))) {
+        return fail("wiki state update failed");
+    }
+    if (!MarkIndexDirty(context.user) || !Commit()) return fail("wiki transaction commit failed");
     return true;
 }
 
 bool KnowledgeStore::DeleteSourceKnowledge(const std::string &user, const std::string &md5,
                                            std::string *error) {
-    if (!BeginTransaction()) { if(error)*error="cannot begin delete transaction"; return false; }
-    const std::string eu=Escape(user), em=Escape(md5);
+    if (!BeginTransaction()) { if (error) *error = "cannot begin delete transaction"; return false; }
+    const std::string eu = Escape(user), em = Escape(md5);
     std::vector<std::vector<std::string>> remaining_relations;
-    if (!Query("SELECT 1 FROM user_file_list WHERE user='" + eu + "' AND md5='" + em + "' LIMIT 1 FOR UPDATE", &remaining_relations)) {
+    if (!Query("SELECT 1 FROM user_file_list WHERE user='" + eu + "' AND md5='" + em +
+               "' LIMIT 1 FOR UPDATE", &remaining_relations)) {
         Rollback(); if (error) *error = "source relation lookup failed"; return false;
     }
     if (!remaining_relations.empty()) {
         if (!Commit()) { Rollback(); if (error) *error = "source relation still exists"; return false; }
         return true;
     }
-    const bool ok = Exec("UPDATE knowledge_document SET evidence_state='DELETED',wiki_state='STALE',last_error=NULL WHERE user='" + eu + "' AND md5='" + em + "'") &&
+    const bool ok =
+        Exec("UPDATE knowledge_document SET evidence_state='DELETED',wiki_state='STALE',last_error=NULL WHERE user='" + eu + "' AND md5='" + em + "'") &&
         Exec("UPDATE llm_wiki_citation SET state='STALE' WHERE user='" + eu + "' AND chunk_id IN (SELECT id FROM knowledge_chunk WHERE user='" + eu + "' AND md5='" + em + "')") &&
         Exec("UPDATE knowledge_chunk SET state='DELETED' WHERE user='" + eu + "' AND md5='" + em + "'") &&
         Exec("UPDATE knowledge_vector v JOIN knowledge_chunk c ON c.user=v.user AND c.id=v.source_id AND v.source_type='chunk' SET v.status='INACTIVE' WHERE c.user='" + eu + "' AND c.md5='" + em + "'") &&
-        Exec("UPDATE llm_wiki_claim c JOIN llm_wiki_citation affected ON affected.user=c.user AND affected.claim_id=c.id JOIN knowledge_chunk source_chunk ON source_chunk.user=affected.user AND source_chunk.id=affected.chunk_id AND source_chunk.md5='" + em + "' SET c.status='STALE' WHERE c.user='" + eu + "' AND NOT EXISTS (SELECT 1 FROM llm_wiki_citation x JOIN knowledge_chunk k ON k.user=x.user AND k.id=x.chunk_id AND k.state='PUBLISHED' WHERE x.user=c.user AND x.claim_id=c.id AND x.state='ACTIVE')") &&
-        Exec("UPDATE knowledge_vector v JOIN llm_wiki_revision r ON r.user=v.user AND r.id=v.source_id AND v.source_type='wiki_revision' JOIN llm_wiki_citation affected ON affected.user=r.user AND affected.revision_id=r.id JOIN knowledge_chunk source_chunk ON source_chunk.user=affected.user AND source_chunk.id=affected.chunk_id AND source_chunk.md5='" + em + "' SET v.status='INACTIVE' WHERE v.user='" + eu + "' AND NOT EXISTS (SELECT 1 FROM llm_wiki_citation x JOIN knowledge_chunk k ON k.user=x.user AND k.id=x.chunk_id AND k.state='PUBLISHED' WHERE x.user=r.user AND x.revision_id=r.id AND x.state='ACTIVE')") &&
+        Exec("UPDATE llm_wiki_claim c JOIN llm_wiki_citation affected ON affected.user=c.user AND affected.claim_id=c.id JOIN knowledge_chunk source_chunk ON source_chunk.user=affected.user AND source_chunk.id=affected.chunk_id AND source_chunk.md5='" + em + "' SET c.status=IF(EXISTS (SELECT 1 FROM llm_wiki_citation x JOIN knowledge_chunk k ON k.user=x.user AND k.id=x.chunk_id AND k.state='PUBLISHED' WHERE x.user=c.user AND x.claim_id=c.id AND x.state='ACTIVE' AND EXISTS (SELECT 1 FROM user_file_list u WHERE u.user=k.user AND u.md5=k.md5)),'ACTIVE','STALE') WHERE c.user='" + eu + "'") &&
+        Exec("UPDATE knowledge_vector v JOIN llm_wiki_revision r ON r.user=v.user AND r.id=v.source_id AND v.source_type='wiki_revision' JOIN llm_wiki_citation affected ON affected.user=r.user AND affected.revision_id=r.id JOIN knowledge_chunk source_chunk ON source_chunk.user=affected.user AND source_chunk.id=affected.chunk_id AND source_chunk.md5='" + em + "' SET v.status='INACTIVE' WHERE v.user='" + eu + "'") &&
         Exec("UPDATE llm_wiki_link SET status='STALE' WHERE user='" + eu + "' AND (src_md5='" + em + "' OR dst_md5='" + em + "')") &&
-        Exec("UPDATE llm_wiki_page p JOIN llm_wiki_revision r ON r.id=p.current_revision_id JOIN llm_wiki_citation affected ON affected.user=r.user AND affected.revision_id=r.id JOIN knowledge_chunk source_chunk ON source_chunk.user=affected.user AND source_chunk.id=affected.chunk_id AND source_chunk.md5='" + em + "' SET p.status='STALE' WHERE p.user='" + eu + "' AND NOT EXISTS (SELECT 1 FROM llm_wiki_citation x JOIN knowledge_chunk k ON k.user=x.user AND k.id=x.chunk_id AND k.state='PUBLISHED' WHERE x.user=r.user AND x.revision_id=r.id AND x.state='ACTIVE')") &&
-        Exec("INSERT INTO ai_parse_task(user,md5,task_type,source,status,retry_count) SELECT '" + eu + "','" + em + "','repair_wiki','delete_source','pending',0 FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM ai_parse_task WHERE user='" + eu + "' AND md5='" + em + "' AND task_type='repair_wiki' AND status IN ('pending','running'))") &&
-        MarkIndexDirty(user) && Commit();
-    if (!ok) { Rollback(); if(error)*error="source knowledge delete failed"; }
-    return ok;
+        Exec("UPDATE llm_wiki_page p JOIN llm_wiki_revision r ON r.id=p.current_revision_id JOIN llm_wiki_citation affected ON affected.user=r.user AND affected.revision_id=r.id JOIN knowledge_chunk source_chunk ON source_chunk.user=affected.user AND source_chunk.id=affected.chunk_id AND source_chunk.md5='" + em + "' SET p.status=IF(EXISTS (SELECT 1 FROM llm_wiki_citation x JOIN knowledge_chunk k ON k.user=x.user AND k.id=x.chunk_id AND k.state='PUBLISHED' WHERE x.user=r.user AND x.revision_id=r.id AND x.state='ACTIVE' AND EXISTS (SELECT 1 FROM user_file_list u WHERE u.user=k.user AND u.md5=k.md5)),'STALE','RETIRED') WHERE p.user='" + eu + "'");
+    if (!ok) { Rollback(); if (error) *error = "source knowledge delete failed"; return false; }
+    std::vector<std::vector<std::string>> stale_pages;
+    if (!Query("SELECT 1 FROM llm_wiki_page p JOIN llm_wiki_revision r ON r.id=p.current_revision_id JOIN llm_wiki_citation affected ON affected.user=r.user AND affected.revision_id=r.id JOIN knowledge_chunk source_chunk ON source_chunk.user=affected.user AND source_chunk.id=affected.chunk_id AND source_chunk.md5='" + em + "' WHERE p.user='" + eu + "' AND p.status='STALE' LIMIT 1", &stale_pages)) {
+        Rollback(); if (error) *error = "repair lookup failed"; return false;
+    }
+    if ((!stale_pages.empty() && enqueue_knowledge_task(connection_, user.c_str(), md5.c_str(),
+                                                         "repair_wiki", "source_deleted", 0) != 0) ||
+        !MarkIndexDirty(user) || !Commit()) {
+        Rollback(); if (error) *error = "source knowledge delete failed"; return false;
+    }
+    return true;
 }
 
 }  // namespace hydrastore

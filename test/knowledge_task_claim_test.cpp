@@ -54,11 +54,44 @@ int main() {
     assert(mysql_query(cleanup.Connection(), ("UPDATE ai_parse_task SET lease_until=DATE_SUB(NOW(),INTERVAL 1 MINUTE) WHERE id=" + std::to_string(stale.id)).c_str()) == 0);
     assert(!cleanup.FinishTask(stale));
     assert(cleanup.RecoverExpiredTasks());
+    assert(mysql_query(cleanup.Connection(), ("UPDATE ai_parse_task SET next_retry_at=NOW() WHERE id=" + std::to_string(stale.id)).c_str()) == 0);
     hydrastore::KnowledgeTaskClaim recovered;
     assert(cleanup.ClaimTask("claim-test-recovered", &recovered));
     assert(!cleanup.FinishTask(stale));
     assert(cleanup.FinishTask(recovered));
     assert(mysql_query(cleanup.Connection(), ("DELETE FROM ai_parse_task WHERE user='" + test_user + "' AND md5='" + test_md5 + "'").c_str()) == 0);
+
+    const std::string enqueue_user = "__hydra_enqueue_race_test";
+    const std::string enqueue_md5 = "__hydra_enqueue_race_md5";
+    assert(Raw(cleanup.Connection(), "DELETE FROM ai_parse_task WHERE user='" + enqueue_user + "' AND md5='" + enqueue_md5 + "'"));
+    std::vector<std::thread> enqueuers;
+    std::vector<int> enqueued(32, 0);
+    for (int i = 0; i < 32; ++i) {
+        enqueuers.emplace_back([&, i] {
+            hydrastore::KnowledgeStore store(host, port, user, password, database);
+            enqueued[i] = store.Connect() && store.EnqueueTask(enqueue_user, enqueue_md5, "parse_file", "race", true) ? 1 : 0;
+        });
+    }
+    for (auto &enqueuer : enqueuers) enqueuer.join();
+    for (const int ok : enqueued) assert(ok != 0);
+    assert(Scalar(cleanup.Connection(), "SELECT COUNT(*) FROM ai_parse_task WHERE user='" + enqueue_user + "' AND md5='" + enqueue_md5 + "' AND task_type='parse_source' AND status IN ('pending','running')") == "1");
+    assert(Raw(cleanup.Connection(), "DELETE FROM ai_parse_task WHERE user='" + enqueue_user + "' AND md5='" + enqueue_md5 + "'"));
+
+    const std::string retry_user = "__hydra_retry_budget_test";
+    const std::string retry_md5 = "__hydra_retry_budget_md5";
+    assert(Raw(cleanup.Connection(), "DELETE FROM ai_parse_task WHERE user='" + retry_user + "' AND md5='" + retry_md5 + "'"));
+    assert(cleanup.EnqueueTask(retry_user, retry_md5, "parse_source", "retry", true));
+    for (int attempt = 0; attempt < 4; ++attempt) {
+        hydrastore::KnowledgeTaskClaim retry_claim;
+        assert(cleanup.ClaimTask("retry-worker-" + std::to_string(attempt), &retry_claim));
+        assert(mysql_query(cleanup.Connection(), ("UPDATE ai_parse_task SET lease_until=DATE_SUB(NOW(),INTERVAL 1 MINUTE),next_retry_at=NOW() WHERE id=" + std::to_string(retry_claim.id)).c_str()) == 0);
+        assert(cleanup.RecoverExpiredTasks());
+        assert(mysql_query(cleanup.Connection(), ("UPDATE ai_parse_task SET next_retry_at=NOW() WHERE user='" + retry_user + "' AND md5='" + retry_md5 + "' AND status='pending'").c_str()) == 0);
+    }
+    assert(Scalar(cleanup.Connection(), "SELECT status FROM ai_parse_task WHERE user='" + retry_user + "' AND md5='" + retry_md5 + "'") == "failed");
+    hydrastore::KnowledgeTaskClaim no_retry_claim;
+    assert(!cleanup.ClaimTask("retry-worker-after-budget", &no_retry_claim));
+    assert(Raw(cleanup.Connection(), "DELETE FROM ai_parse_task WHERE user='" + retry_user + "' AND md5='" + retry_md5 + "'"));
 
     const std::string delete_user = "__hydra_delete_test";
     const std::string deleted_md5 = "__hydra_delete_source_a";
@@ -105,16 +138,17 @@ int main() {
     assert(Scalar(cleanup.Connection(), "SELECT state FROM llm_wiki_citation WHERE user='" + delete_user + "' AND claim_id=" + shared_claim + " AND chunk_id=" + deleted_chunk) == "STALE");
     assert(Scalar(cleanup.Connection(), "SELECT status FROM llm_wiki_claim WHERE id=" + shared_claim) == "ACTIVE");
     assert(Scalar(cleanup.Connection(), "SELECT status FROM llm_wiki_claim WHERE id=" + deleted_claim) == "STALE");
-    assert(Scalar(cleanup.Connection(), "SELECT status FROM llm_wiki_page WHERE id=" + shared_page) == "ACTIVE");
-    assert(Scalar(cleanup.Connection(), "SELECT status FROM llm_wiki_page WHERE id=" + deleted_page) == "STALE");
-    assert(Scalar(cleanup.Connection(), "SELECT status FROM knowledge_vector WHERE source_id=" + shared_revision + " AND source_type='wiki_revision'") == "ACTIVE");
+    assert(Scalar(cleanup.Connection(), "SELECT status FROM llm_wiki_page WHERE id=" + shared_page) == "STALE");
+    assert(Scalar(cleanup.Connection(), "SELECT status FROM llm_wiki_page WHERE id=" + deleted_page) == "RETIRED");
+    assert(Scalar(cleanup.Connection(), "SELECT status FROM knowledge_vector WHERE source_id=" + shared_revision + " AND source_type='wiki_revision'") == "INACTIVE");
     assert(Scalar(cleanup.Connection(), "SELECT status FROM knowledge_vector WHERE source_id=" + deleted_revision + " AND source_type='wiki_revision'") == "INACTIVE");
     std::vector<hydrastore::WikiPageView> stale_pages;
     assert(cleanup.LoadStaleWikiForSource(delete_user, deleted_md5, &stale_pages));
-    assert(stale_pages.size() == 1 && stale_pages[0].title == "Deleted page");
+    assert(stale_pages.size() == 1 && stale_pages[0].title == "Shared page");
+    assert(Scalar(cleanup.Connection(), "SELECT COUNT(*) FROM ai_parse_task WHERE user='" + delete_user + "' AND md5='" + deleted_md5 + "' AND task_type='repair_wiki' AND status IN ('pending','running')") == "1");
     std::vector<hydrastore::WikiPageView> shared_pages;
     assert(cleanup.LoadWikiForSource(delete_user, shared_md5, &shared_pages));
-    assert(shared_pages.size() == 1 && shared_pages[0].claims.size() == 1 && shared_pages[0].claims[0].citations.size() == 1 && shared_pages[0].claims[0].citations[0].first == shared_md5);
+    assert(shared_pages.empty());
     assert(std::strtoll(Scalar(cleanup.Connection(), "SELECT dirty_generation FROM knowledge_index_state WHERE user='" + delete_user + "'").c_str(), nullptr, 10) > 0);
     assert(Raw(cleanup.Connection(), "DELETE FROM llm_wiki_citation WHERE user='" + delete_user + "'"));
     assert(Raw(cleanup.Connection(), "DELETE FROM llm_wiki_claim WHERE user='" + delete_user + "'"));

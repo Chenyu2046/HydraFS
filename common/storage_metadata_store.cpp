@@ -1,5 +1,9 @@
 #include "metadata_store.h"
 
+extern "C" {
+#include "knowledge_task.h"
+}
+
 #include <mysql/mysql.h>
 
 #include <algorithm>
@@ -39,19 +43,6 @@ std::string FileSuffix(const std::string &filename) {
     if (suffix.size() > 31) return {};
     for (char &ch : suffix) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
     return suffix;
-}
-
-bool IsParseableType(const std::string &type) {
-    static const char *const types[] = {
-        "txt", "md", "csv", "json", "xml", "html", "htm", "log",
-        "c", "cpp", "h", "hpp", "py", "js", "ts", "jsx", "tsx",
-        "css", "java", "go", "rs", "rb", "php", "sh", "bat", "yaml", "yml",
-        "pdf", "png", "jpg", "jpeg", "gif", "bmp", "webp", nullptr
-    };
-    for (const char *candidate : types) {
-        if (candidate && type == candidate) return true;
-    }
-    return false;
 }
 
 long long NowSeconds() {
@@ -753,7 +744,10 @@ bool MetadataStore::DeleteObjectForUser(const std::string &object_id, const std:
     const std::string manifest_id = rows[0][2];
     const int references = std::stoi(rows[0][3]);
     if (!Exec("DELETE FROM user_file_list WHERE user=? AND md5=? AND file_name=?",
-              {user, digest, rows[0][4]})) {
+              {user, digest, rows[0][4]}) || AffectedRows() != 1) {
+        rollback(); return false;
+    }
+    if (!EnqueueKnowledgeTaskInTxn(user, digest, "delete_source", "object_delete")) {
         rollback(); return false;
     }
     if (!Exec("DELETE FROM share_file_list WHERE user=? AND md5=? AND file_name=?",
@@ -919,12 +913,16 @@ bool MetadataStore::EnqueueParseTask(const std::string &user,
                                      const std::string &content_digest,
                                      const std::string &type,
                                      const std::string &source) {
-    const std::string status = IsParseableType(type) ? "pending" : "skipped";
-    return Exec("INSERT INTO ai_parse_task(user,md5,task_type,source,status) "
-                "SELECT ?,?,'parse_file',?,? FROM DUAL WHERE NOT EXISTS ("
-                "SELECT 1 FROM ai_parse_task WHERE user=? AND md5=? "
-                "AND status IN ('pending','running'))",
-                {user, content_digest, source, status, user, content_digest});
+    (void)type;
+    return EnqueueKnowledgeTaskInTxn(user, content_digest, "parse_source", source);
+}
+
+bool MetadataStore::EnqueueKnowledgeTaskInTxn(const std::string &user,
+                                               const std::string &md5,
+                                               const std::string &task_type,
+                                               const std::string &source) {
+    return connection_ && enqueue_knowledge_task(connection_, user.c_str(), md5.c_str(),
+                                                 task_type.c_str(), source.c_str(), 0) == 0;
 }
 
 bool MetadataStore::GetSharedManifest(const std::string &share_token,

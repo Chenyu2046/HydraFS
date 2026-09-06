@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace hydrastore {
@@ -40,6 +41,7 @@ struct ExtractedDocument {
 
 struct EvidenceChunk {
     std::int64_t id = 0;
+    std::string source_md5;
     int chunk_no = 0;
     std::string heading;
     std::string content;
@@ -102,14 +104,23 @@ struct WikiPatch {
     std::vector<WikiLinkPatch> links;
 };
 
-struct WikiCandidate {
-    std::int64_t page_id = 0;
+struct WikiEvidenceContext {
+    std::vector<EvidenceChunk> current_source_chunks;
+    std::vector<EvidenceChunk> existing_page_chunks;
+    std::vector<std::int64_t> allowed_chunk_ids;
+};
+
+struct WikiPublishContext {
+    std::string user;
+    std::string trigger_md5;
+    std::vector<std::int64_t> allowed_chunk_ids;
+    bool repair_mode = false;
+    KnowledgeTaskClaim task;
+};
+
+struct WikiPageEmbedding {
     std::string page_key;
-    std::string title;
-    std::int64_t revision_id = 0;
-    std::string summary;
-    std::string body_markdown;
-    std::vector<std::string> active_claims;
+    std::vector<float> values;
 };
 
 struct WikiClaimView {
@@ -120,6 +131,18 @@ struct WikiClaimView {
     std::vector<std::pair<std::string, std::int64_t>> citations;
 };
 
+struct WikiCandidate {
+    std::int64_t page_id = 0;
+    std::string page_key;
+    std::string title;
+    std::int64_t revision_id = 0;
+    std::string summary;
+    std::string body_markdown;
+    std::vector<std::string> active_claims;
+    std::vector<WikiClaimView> claims;
+    std::vector<EvidenceChunk> evidence;
+};
+
 struct WikiPageView {
     std::int64_t page_id = 0;
     std::string page_key;
@@ -128,6 +151,7 @@ struct WikiPageView {
     std::string summary;
     std::string body_markdown;
     std::vector<WikiClaimView> claims;
+    std::vector<EvidenceChunk> evidence;
     std::vector<std::string> source_md5s;
 };
 

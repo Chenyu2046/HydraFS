@@ -92,6 +92,9 @@ services:
     restart: unless-stopped
     ports:
       - "10000-10012:10000-10012"
+    environment:
+      AI_SEARCH_WORKERS: "4"
+      KNOWLEDGE_WORKERS: "4"
     volumes:
       - ./nginx_fastdfs/client.conf:/etc/fdfs/client.conf
     depends_on:
@@ -102,7 +105,7 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "lsof", "-i", ":10000"]
+      test: ["CMD-SHELL", "lsof -nP -iTCP:10012 -sTCP:LISTEN >/dev/null && test \"$$(pgrep -fc '[/]app/bin_cgi/ai')\" -ge \"$${AI_SEARCH_WORKERS}\" && test \"$$(pgrep -fc '[/]app/bin_cgi/knowledge_worker')\" -ge \"$${KNOWLEDGE_WORKERS}\" && test \"$$(pgrep -fc '[/]app/bin_cgi/knowledge_index_worker')\" -eq 1"]
       interval: 10s
       timeout: 3s
       retries: 5

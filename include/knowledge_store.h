@@ -78,6 +78,10 @@ public:
                              const std::string &error);
     bool LoadActiveVectors(const std::string &user,
                            std::vector<KnowledgeVectorRecord> *vectors);
+    bool LoadVectorsForSources(const std::string &user,
+                               const std::string &source_type,
+                               const std::vector<std::int64_t> &source_ids,
+                               std::vector<KnowledgeVectorRecord> *vectors);
 
     bool LoadSearchHydration(const std::string &user,
                              const std::vector<std::int64_t> &vector_ids,
@@ -102,12 +106,12 @@ public:
         const std::string &user, const std::vector<std::int64_t> &revision_ids,
         std::vector<WikiCandidate> *candidates);
 
-    bool PublishWikiPatch(const std::string &user, const std::string &md5,
-                          const WikiPatch &patch, const std::string &model,
+    bool PublishWikiPatch(const WikiPublishContext &context,
+                          const WikiPatch &patch,
+                          const std::vector<WikiPageEmbedding> &embeddings,
+                          const std::string &model,
                           const std::string &compiler_version,
-                          const std::vector<float> &wiki_embedding,
-                          int embedding_dimension, std::string *error,
-                          const KnowledgeTaskClaim *claim = nullptr);
+                          int embedding_dimension, std::string *error);
     bool DeleteSourceKnowledge(const std::string &user, const std::string &md5,
                                std::string *error);
 
@@ -122,6 +126,8 @@ private:
     void Rollback();
     bool AffectedOne() const;
     bool ReadSingle(const std::string &sql, std::vector<std::string> *row);
+    bool LoadWikiCandidateEvidence(const std::string &user,
+                                   std::vector<WikiCandidate> *candidates);
     bool VerifyTaskLeaseInTransaction(const KnowledgeTaskClaim &claim);
     bool EnsureConnection();
     void Close();

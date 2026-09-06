@@ -18,9 +18,13 @@ extern "C" {
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <cstdint>
 #include <cstring>
 #include <map>
+#include <memory>
+#include <mutex>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -56,6 +60,57 @@ void Error(int code, const char *message) {
 
 std::string UserHash(const std::string &user) {
     hydrastore::Sha256 sha; sha.Update(user.data(), user.size()); return sha.FinalHex();
+}
+
+struct CachedIndex {
+    std::shared_ptr<hydrastore::FaissSnapshot> snapshot;
+    std::uint64_t access = 0;
+};
+
+std::mutex g_index_cache_mutex;
+std::map<std::pair<std::string, std::int64_t>, CachedIndex> g_index_cache;
+std::uint64_t g_index_cache_access = 0;
+
+std::size_t SearchCacheCapacity() {
+    const long configured = std::strtol(Cfg("faiss", "search_cache_users", "8").c_str(), nullptr, 10);
+    return static_cast<std::size_t>(std::max(1L, std::min(32L, configured)));
+}
+
+float SearchMinScore() {
+    const float configured = static_cast<float>(std::strtod(Cfg("faiss", "search_min_score", "0.45").c_str(), nullptr));
+    if (!std::isfinite(configured)) return 0.45f;
+    return std::max(-1.0f, std::min(1.0f, configured));
+}
+
+bool LoadCachedIndex(const std::string &user, std::int64_t generation,
+                     const std::string &path, int dimension,
+                     std::size_t capacity,
+                     std::shared_ptr<hydrastore::FaissSnapshot> *result) {
+    if (!result || generation <= 0 || dimension <= 0) return false;
+    const std::pair<std::string, std::int64_t> key(user, generation);
+    std::lock_guard<std::mutex> lock(g_index_cache_mutex);
+    const auto existing = g_index_cache.find(key);
+    if (existing != g_index_cache.end()) {
+        existing->second.access = ++g_index_cache_access;
+        *result = existing->second.snapshot;
+        return true;
+    }
+    std::shared_ptr<hydrastore::FaissSnapshot> snapshot(new hydrastore::FaissSnapshot());
+    if (!snapshot->Load(path, dimension)) return false;
+    for (auto it = g_index_cache.begin(); it != g_index_cache.end();) {
+        if (it->first.first == user) it = g_index_cache.erase(it);
+        else ++it;
+    }
+    while (g_index_cache.size() >= capacity) {
+        auto oldest = g_index_cache.begin();
+        for (auto it = g_index_cache.begin(); it != g_index_cache.end(); ++it) {
+            if (it->second.access < oldest->second.access) oldest = it;
+        }
+        g_index_cache.erase(oldest);
+    }
+    g_index_cache.emplace(key, CachedIndex{snapshot, ++g_index_cache_access});
+    *result = std::move(snapshot);
+    return true;
 }
 
 hydrastore::KnowledgeStore MakeStore() {
@@ -171,36 +226,117 @@ int HandleRebuild(cJSON *root) {
 }
 
 int HandleSearch(cJSON *root) {
-    std::string user, token; if (!Required(root,&user,&token)) { Error(4,"token error"); return -1; }
-    const std::string query=Field(root,"query"); if(query.empty()){Error(1,"empty query");return -1;} if(query.size()>4096){Error(1,"query too long");return -1;}
-    hydrastore::KnowledgeStore store=MakeStore(); if(!store.Connect()){Error(1,"db error");return -1;}
-    const std::string key=ApiKey(&store,root,user); if(key.empty()){Error(1,"missing api_key");return -1;}
-    const std::string model=Cfg("dashscope","embedding_model","text-embedding-v3");
-    const int dimension=std::max(1,std::atoi(Cfg("dashscope","embedding_dimension","1024").c_str()));
-    std::vector<float> embedding(static_cast<std::size_t>(dimension),0.0f);
-    if(dashscope_get_embedding(key.c_str(),model.c_str(),query.c_str(),embedding.data(),dimension)!=0){Error(1,"embedding failed");return -1;}
-    double norm=0.0; for(float v:embedding) norm+=static_cast<double>(v)*v; norm=std::sqrt(norm); if(norm!=0.0) for(float &v:embedding)v=static_cast<float>(v/norm);
-    std::int64_t published=0,dirty=0; if(!store.LoadIndexState(user,&published,&dirty)){Error(1,"index state unavailable");return -1;}
-    cJSON *response=cJSON_CreateObject(); cJSON_AddNumberToObject(response,"code",0); cJSON_AddNumberToObject(response,"index_generation",static_cast<double>(published));
-    cJSON *files=cJSON_CreateArray(), *wiki=cJSON_CreateArray();
-    if(published==0){cJSON_AddNumberToObject(response,"count",0);cJSON_AddItemToObject(response,"files",files);cJSON_AddItemToObject(response,"wiki",wiki);Print(response);cJSON_Delete(response);return 0;}
-    const std::string path=Cfg("faiss","user_index_dir","/data/faiss/users")+"/"+UserHash(user)+"/vectors."+std::to_string(published)+".faiss";
-    hydrastore::FaissSnapshot snapshot; std::vector<std::int64_t> ids; std::vector<float> scores;
-    if(!snapshot.Load(path,dimension)||!snapshot.Search(embedding,30,&ids,&scores)){cJSON_AddNumberToObject(response,"count",0);cJSON_AddItemToObject(response,"files",files);cJSON_AddItemToObject(response,"wiki",wiki);Print(response);cJSON_Delete(response);return 0;}
-    std::vector<hydrastore::SearchHydration> hydrated; if(!store.LoadSearchHydration(user,ids,&hydrated)){cJSON_Delete(response);Error(1,"search hydration failed");return -1;}
-    std::vector<std::int64_t> revisions; std::map<std::int64_t,float> score_by_id; for(std::size_t i=0;i<ids.size();++i)score_by_id[ids[i]]=scores[i];
-    for(const auto &row:hydrated){ if(row.source_type=="wiki_revision") revisions.push_back(row.revision_id); }
-    std::vector<hydrastore::WikiClaimView> claims; if(!revisions.empty()&&!store.LoadWikiClaims(user,revisions,&claims)){cJSON_Delete(response);Error(1,"claim hydration failed");return -1;}
-    for(const auto &row:hydrated){
-        const float score=score_by_id[row.vector_id];
-        if(row.source_type=="chunk"){
-            cJSON *file=nullptr; for(int i=0;i<cJSON_GetArraySize(files);++i){cJSON *item=cJSON_GetArrayItem(files,i);if(std::string(cJSON_GetObjectItem(item,"md5")->valuestring)==row.md5){file=item;break;}}
-            if(!file){file=cJSON_CreateObject();cJSON_AddStringToObject(file,"md5",row.md5.c_str());cJSON_AddStringToObject(file,"filename",row.filename.c_str());cJSON_AddStringToObject(file,"type",row.type.c_str());cJSON_AddNumberToObject(file,"size",static_cast<double>(row.size));cJSON_AddStringToObject(file,"url",row.url.c_str());cJSON_AddNumberToObject(file,"score",score);cJSON_AddNumberToObject(file,"wiki_ready",0);cJSON_AddItemToObject(file,"matches",cJSON_CreateArray());cJSON_AddItemToObject(file,"snippets",cJSON_CreateArray());cJSON_AddItemToArray(files,file);} else { cJSON *file_score=cJSON_GetObjectItem(file,"score"); if(file_score && score>static_cast<float>(file_score->valuedouble)) file_score->valuedouble=score; }
-            cJSON *matches=cJSON_GetObjectItem(file,"matches");if(matches && cJSON_GetArraySize(matches)<2){cJSON *match=cJSON_CreateObject();cJSON_AddNumberToObject(match,"chunkId",static_cast<double>(row.source_id));cJSON_AddNumberToObject(match,"score",score);cJSON_AddStringToObject(match,"snippet",row.snippet.c_str());cJSON_AddItemToArray(matches,match);} cJSON *snippets=cJSON_GetObjectItem(file,"snippets");if(snippets && cJSON_GetArraySize(snippets)<2)cJSON_AddItemToArray(snippets,cJSON_CreateString(row.snippet.c_str()));
-        } else {
-            cJSON *page=PageJson({0,row.page_key,row.title,row.revision_id,row.summary,row.body_markdown,{},{}}); cJSON_AddNumberToObject(page,"score",score);
-            cJSON *claim_array=cJSON_CreateArray(); for(const auto &claim:claims) if(claim.id>0 && claim.revision_id==row.revision_id) AddClaim(claim_array,claim); cJSON_ReplaceItemInObject(page,"claims",claim_array);
-            cJSON_AddItemToArray(wiki,page);
+    std::string user, token;
+    if (!Required(root, &user, &token)) { Error(4, "token error"); return -1; }
+    const std::string query = Field(root, "query");
+    if (query.empty()) { Error(1, "empty query"); return -1; }
+    if (query.size() > 4096) { Error(1, "query too long"); return -1; }
+    hydrastore::KnowledgeStore store = MakeStore();
+    if (!store.Connect()) { Error(1, "db error"); return -1; }
+    const std::string key = ApiKey(&store, root, user);
+    if (key.empty()) { Error(1, "missing api_key"); return -1; }
+    const std::string model = Cfg("dashscope", "embedding_model", "text-embedding-v3");
+    const int dimension = std::max(1, std::atoi(Cfg("dashscope", "embedding_dimension", "1024").c_str()));
+    std::vector<float> embedding(static_cast<std::size_t>(dimension), 0.0f);
+    if (dashscope_get_embedding(key.c_str(), model.c_str(), query.c_str(), embedding.data(), dimension) != 0) {
+        Error(1, "embedding failed"); return -1;
+    }
+    double norm = 0.0;
+    for (float value : embedding) {
+        if (!std::isfinite(value)) { Error(1, "embedding failed"); return -1; }
+        norm += static_cast<double>(value) * value;
+    }
+    norm = std::sqrt(norm);
+    if (norm == 0.0) { Error(1, "embedding failed"); return -1; }
+    for (float &value : embedding) value = static_cast<float>(value / norm);
+    std::int64_t published = 0, dirty = 0;
+    if (!store.LoadIndexState(user, &published, &dirty)) { Error(1, "index state unavailable"); return -1; }
+    cJSON *response = cJSON_CreateObject();
+    cJSON_AddNumberToObject(response, "code", 0);
+    cJSON_AddNumberToObject(response, "index_generation", static_cast<double>(published));
+    cJSON *files = cJSON_CreateArray(), *wiki = cJSON_CreateArray();
+    if (published == 0) {
+        cJSON_AddNumberToObject(response, "count", 0);
+        cJSON_AddItemToObject(response, "files", files); cJSON_AddItemToObject(response, "wiki", wiki);
+        Print(response); cJSON_Delete(response); return 0;
+    }
+    const std::string path = Cfg("faiss", "user_index_dir", "/data/faiss/users") + "/" +
+        UserHash(user) + "/vectors." + std::to_string(published) + ".faiss";
+    std::shared_ptr<hydrastore::FaissSnapshot> snapshot;
+    if (!LoadCachedIndex(user, published, path, dimension, SearchCacheCapacity(), &snapshot)) {
+        cJSON_Delete(response); Error(2, "index unavailable"); return -1;
+    }
+    std::vector<std::int64_t> ids;
+    std::vector<float> scores;
+    if (!snapshot->Search(embedding, 30, &ids, &scores)) {
+        cJSON_Delete(response); Error(2, "index unavailable"); return -1;
+    }
+    const float min_score = SearchMinScore();
+    std::vector<std::int64_t> filtered_ids;
+    std::map<std::int64_t, float> score_by_id;
+    for (std::size_t i = 0; i < ids.size() && i < scores.size(); ++i) {
+        if (ids[i] > 0 && std::isfinite(scores[i]) && scores[i] >= min_score) {
+            filtered_ids.push_back(ids[i]); score_by_id[ids[i]] = scores[i];
+        }
+    }
+    std::vector<hydrastore::SearchHydration> hydrated;
+    if (!filtered_ids.empty() && !store.LoadSearchHydration(user, filtered_ids, &hydrated)) {
+        cJSON_Delete(response); Error(1, "search hydration failed"); return -1;
+    }
+    std::vector<std::int64_t> revisions;
+    for (const auto &row : hydrated) if (row.source_type == "wiki_revision" &&
+        std::find(revisions.begin(), revisions.end(), row.revision_id) == revisions.end()) revisions.push_back(row.revision_id);
+    std::vector<hydrastore::WikiClaimView> claims;
+    if (!revisions.empty() && !store.LoadWikiClaims(user, revisions, &claims)) {
+        cJSON_Delete(response); Error(1, "claim hydration failed"); return -1;
+    }
+    for (const auto &row : hydrated) {
+        const auto score_it = score_by_id.find(row.vector_id);
+        if (score_it == score_by_id.end()) continue;
+        const float score = score_it->second;
+        if (row.source_type == "chunk") {
+            cJSON *file = nullptr;
+            for (int i = 0; i < cJSON_GetArraySize(files); ++i) {
+                cJSON *item = cJSON_GetArrayItem(files, i);
+                cJSON *md5 = cJSON_GetObjectItem(item, "md5");
+                if (md5 && md5->valuestring && std::string(md5->valuestring) == row.md5) { file = item; break; }
+            }
+            if (!file) {
+                file = cJSON_CreateObject();
+                cJSON_AddStringToObject(file, "md5", row.md5.c_str());
+                cJSON_AddStringToObject(file, "filename", row.filename.c_str());
+                cJSON_AddStringToObject(file, "type", row.type.c_str());
+                cJSON_AddNumberToObject(file, "size", static_cast<double>(row.size));
+                cJSON_AddStringToObject(file, "url", row.url.c_str());
+                cJSON_AddNumberToObject(file, "score", score);
+                cJSON_AddNumberToObject(file, "wiki_ready", 0);
+                cJSON_AddItemToObject(file, "matches", cJSON_CreateArray());
+                cJSON_AddItemToObject(file, "snippets", cJSON_CreateArray());
+                cJSON_AddItemToArray(files, file);
+            } else {
+                cJSON *file_score = cJSON_GetObjectItem(file, "score");
+                if (file_score && score > static_cast<float>(file_score->valuedouble)) file_score->valuedouble = score;
+            }
+            cJSON *matches = cJSON_GetObjectItem(file, "matches");
+            if (matches && cJSON_GetArraySize(matches) < 2) {
+                cJSON *match = cJSON_CreateObject();
+                cJSON_AddNumberToObject(match, "chunkId", static_cast<double>(row.source_id));
+                cJSON_AddNumberToObject(match, "score", score);
+                cJSON_AddStringToObject(match, "snippet", row.snippet.c_str());
+                cJSON_AddItemToArray(matches, match);
+            }
+            cJSON *snippets = cJSON_GetObjectItem(file, "snippets");
+            if (snippets && cJSON_GetArraySize(snippets) < 2) cJSON_AddItemToArray(snippets, cJSON_CreateString(row.snippet.c_str()));
+        } else if (row.source_type == "wiki_revision") {
+            hydrastore::WikiPageView view;
+            view.page_key = row.page_key; view.title = row.title; view.revision_id = row.revision_id;
+            view.summary = row.summary; view.body_markdown = row.body_markdown;
+            cJSON *page = PageJson(view);
+            cJSON_AddNumberToObject(page, "score", score);
+            cJSON *claim_array = cJSON_CreateArray();
+            for (const auto &claim : claims) if (claim.id > 0 && claim.revision_id == row.revision_id) AddClaim(claim_array, claim);
+            cJSON_ReplaceItemInObject(page, "claims", claim_array);
+            cJSON_AddItemToArray(wiki, page);
         }
     }
     cJSON_AddNumberToObject(response,"count",cJSON_GetArraySize(files));cJSON_AddItemToObject(response,"files",files);cJSON_AddItemToObject(response,"wiki",wiki);Print(response);cJSON_Delete(response);return 0;
