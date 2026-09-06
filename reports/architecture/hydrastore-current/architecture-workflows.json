@@ -1,0 +1,150 @@
+{
+  "title": "HydraStore current architecture and workflows",
+  "project": "AI_YunCunChu",
+  "generated_at": "2026-09-06",
+  "git": {
+    "branch": "main",
+    "commit": "807c23bc833f2ec8dd0b7a33fbff27359dbeb7a3"
+  },
+  "artifacts": {
+    "source_markdown": "docs/ai/architecture-workflows.md",
+    "interactive_html": "reports/architecture/hydrastore-current/architecture-workflows.html",
+    "static_svg": "reports/architecture/hydrastore-current/architecture-workflows.svg"
+  },
+  "annotation_legend": {
+    "purpose": "中文注释用于说明模块职责、同步/异步边界、状态可见性和并发安全约束，不替代源码证据。",
+    "solid_line": "同步主请求或当前步骤",
+    "dashed_line": "异步触发、状态回写或兼容路径",
+    "published": "只有 PUBLISHED/READY 状态对后续读取或搜索可见"
+  },
+  "diagrams": [
+    {
+      "id": "system-context",
+      "title": "总体架构与请求入口",
+      "type": "container-flow",
+      "annotations": [
+        "入口注释：浏览器只访问 Nginx，由 URL 决定进入 legacy、V2、静态资源或 FastDFS 直读。",
+        "一致性注释：MySQL 保存逻辑状态，FastDFS 保存物理 Blob，Redis 只承担协调/临时状态。"
+      ],
+      "claims": [
+        "Nginx terminates HTTPS and routes legacy APIs, V2 object APIs, static assets, and direct FastDFS URLs.",
+        "V2 object APIs are load-balanced across two Gateway services with sixteen workers per instance.",
+        "MySQL owns logical state; FastDFS owns physical blobs; Redis is coordination/cache state; AI workers are asynchronous."
+      ],
+      "evidence": [
+        { "file": "docker/docker-compose.yaml", "lines": "4-232", "why": "Current Compose services, health dependencies, workers, network, and volumes." },
+        { "file": "docker/nginx_fastdfs/nginx.conf", "lines": "24-360", "why": "Current routing, gateway upstream, FastDFS module, buffering, and timeouts." },
+        { "file": "docker/fastcgi_app/start.sh", "lines": "23-142", "why": "Runtime process map for legacy CGI, Gateway-only, GC-only, and AI workers." },
+        { "file": "common/storage_blob_store.cpp", "lines": "54-143", "why": "BlobStore Put/Get/Delete implementation over FastDFS." }
+      ]
+    },
+    {
+      "id": "upload",
+      "title": "小文件 legacy / 大文件 V2 上传",
+      "type": "sequence-and-decision-flow",
+      "annotations": [
+        "分流注释：当前前端以 10 MiB 为阈值，小文件走 legacy，大文件走 V2 manifest + chunk_blob。",
+        "提交注释：物理分片完成校验后才 READY，commit 才把逻辑对象和引用一次性提交。"
+      ],
+      "claims": [
+        "The current uploadImage entry chooses legacy upload for files up to 10 MiB and V2 object upload above that threshold.",
+        "V2 computes a content MD5 and per-part SHA-256, then runs init, adaptive part upload/status polling, and commit.",
+        "Commit creates or reuses the manifest and relations in one MySQL transaction and enqueues source parsing."
+      ],
+      "evidence": [
+        { "file": "picture_bed/src/services/images.js", "lines": "149-208", "why": "Single-scan digest and per-part SHA-256 calculation." },
+        { "file": "picture_bed/src/services/images.js", "lines": "519-564", "why": "Current V2 uploadObject workflow." },
+        { "file": "picture_bed/src/services/images.js", "lines": "566-603", "why": "Current size-based legacy/V2 branch in uploadImage." },
+        { "file": "src_cgi/storage_gateway.cpp", "lines": "388-608", "why": "V2 init, part, status, and commit request handling." },
+        { "file": "common/storage_metadata_store.cpp", "lines": "318-482", "why": "Session resume, digest/size dedup, leases, and part declarations." },
+        { "file": "common/storage_metadata_store.cpp", "lines": "485-712", "why": "Fenced part publication and atomic commit." }
+      ]
+    },
+    {
+      "id": "lifecycle",
+      "title": "下载、分享、删除与 GC 生命周期",
+      "type": "lifecycle-flow",
+      "annotations": [
+        "下载注释：按 manifest 顺序读取 READY 分片，再通过 BlobStore 流式返回。",
+        "删除注释：先删除用户关系；只有零引用、无活跃上传且 grace period 到期才允许物理回收。"
+      ],
+      "claims": [
+        "Manifest downloads read ordered READY chunks and stream each physical blob back through the Gateway.",
+        "Deleting one user reference preserves shared physical chunks; zero-reference chunks enter a grace-period GC flow.",
+        "GC checks for active uploads, claims DELETING, deletes FastDFS data, and retries with backoff on failure."
+      ],
+      "evidence": [
+        { "file": "src_cgi/storage_gateway.cpp", "lines": "623-655", "why": "Private/share manifest lookup and ordered streaming download." },
+        { "file": "common/storage_object_reader.cpp", "lines": "81-150", "why": "Manifest-backed ordered reconstruction and digest/size verification for worker reads." },
+        { "file": "common/storage_metadata_store.cpp", "lines": "733-790", "why": "Reference-aware object deletion and GC_PENDING transition." },
+        { "file": "common/storage_metadata_store.cpp", "lines": "792-865", "why": "Expired-upload reconciliation, GC claim, delete finalization, and retry." },
+        { "file": "src_cgi/storage_gc_worker.cpp", "lines": "39-59", "why": "Ten-second reconcile/physical-delete worker loop." }
+      ]
+    },
+    {
+      "id": "ai-knowledge",
+      "title": "AI 异步证据、Wiki 与索引",
+      "type": "async-pipeline",
+      "annotations": [
+        "异步注释：上传响应只入队，解析、embedding、Wiki 和 FAISS 由 worker 异步完成。",
+        "可见性注释：STAGING 不对搜索开放，只有 PUBLISHED generation 才能被读取。"
+      ],
+      "claims": [
+        "Upload commit and describe enqueue parse_source work; knowledge workers claim tasks with worker and lease fencing.",
+        "Evidence is built in a new generation and published atomically; failed staging does not replace the previous published generation.",
+        "Wiki revisions use citation validation and page-level base-revision CAS; the index worker builds immutable per-user snapshots."
+      ],
+      "evidence": [
+        { "file": "src_cgi/ai_cgi.cpp", "lines": "231-253", "why": "Describe and rebuild become queued/dirty operations." },
+        { "file": "common/storage_metadata_store.cpp", "lines": "700-702", "why": "Object commit enqueues parse_source in its transaction." },
+        { "file": "common/knowledge_store.cpp", "lines": "172-305", "why": "Task claim, lease renewal, completion, retry, and enqueue semantics." },
+        { "file": "src_cgi/knowledge_worker.cpp", "lines": "169-285", "why": "Source read, image/text processing, chunking, embedding, staging, and evidence publish." },
+        { "file": "common/knowledge_store.cpp", "lines": "362-494", "why": "Evidence generation, atomic publish, and fenced abort behavior." },
+        { "file": "common/knowledge_store.cpp", "lines": "915-1063", "why": "Wiki patch validation boundary, revision CAS, citation insert, and publish transaction." },
+        { "file": "src_cgi/knowledge_index_worker.cpp", "lines": "36-101", "why": "Dirty index claim, active vector load, immutable FAISS build, and fenced publish." }
+      ]
+    },
+    {
+      "id": "ai-search",
+      "title": "AI 语义搜索",
+      "type": "read-sequence",
+      "annotations": [
+        "只读注释：搜索不 rebuild、不 append，只消费已发布的 per-user FAISS snapshot。",
+        "补全注释：FAISS 返回稳定 ID 后，由 MySQL 做用户过滤、片段、Wiki claim 和 citation hydration。"
+      ],
+      "claims": [
+        "Search embeds the query, reads only the published per-user FAISS snapshot, filters by score, and hydrates results through MySQL.",
+        "Search returns file matches with chunk IDs/snippets and Wiki claims/citations without rebuilding or appending the index."
+      ],
+      "evidence": [
+        { "file": "src_cgi/ai_cgi.cpp", "lines": "256-375", "why": "Query embedding, published generation lookup, FAISS search, score filtering, and SQL hydration." },
+        { "file": "common/knowledge_store.cpp", "lines": "527-656", "why": "Published index state and user-filtered active vector/hydration queries." },
+        { "file": "docker/mysql/hydra_ai_v2.sql", "lines": "126-138", "why": "Per-user versioned knowledge_index_state schema." }
+      ]
+    },
+    {
+      "id": "state-invariants",
+      "title": "关键状态与并发不变量",
+      "type": "state-model",
+      "annotations": [
+        "状态注释：READY 表示物理 Blob 已校验并可被 manifest 引用。",
+        "回收注释：GC_PENDING 是延迟回收状态，DELETING 失败后可退回并重试。"
+      ],
+      "claims": [
+        "A chunk moves from MISSING/UPLOADING to READY only after physical Put and hash verification with matching owner and lease epoch.",
+        "Zero-reference cleanup requires a grace period and no active upload before DELETING.",
+        "Current and published AI generations are separated so readers never see incomplete staging data."
+      ],
+      "evidence": [
+        { "file": "common/storage_metadata_store.cpp", "lines": "519-591", "why": "Part claim, lease epoch fencing, ready transition, and failure transition." },
+        { "file": "src_cgi/storage_gateway.cpp", "lines": "499-575", "why": "Recoverable backend ID, hash validation, cleanup, and fenced publication path." },
+        { "file": "docker/mysql/init.sql", "lines": "98-162", "why": "V2 unique digest/size key, manifest relations, session, and part constraints." },
+        { "file": "docker/mysql/hydra_ai_v2.sql", "lines": "3-55,126-138", "why": "AI current/published generation and stable vector/index state schema." }
+      ]
+    }
+  ],
+  "not_claimed": [
+    "This bundle is a static source-grounded architecture snapshot, not proof of a fresh full-stack runtime run.",
+    "No new benchmark, DashScope smoke, long-running lease/GC test, or physical multi-storage failure result is inferred from these diagrams."
+  ]
+}

@@ -1,0 +1,95 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="2020" viewBox="0 0 1800 2020" role="img" aria-labelledby="title desc">
+  <title id="title">HydraStore 当前架构与核心 Workflow</title>
+  <desc id="desc">包含总体架构、大文件上传、下载删除 GC、AI 知识层与搜索的离线静态图。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"/>
+    </marker>
+    <style>
+      .bg{fill:#f7f9fc}.panel{fill:#fff;stroke:#d8e0eb;stroke-width:2}.title{font:700 28px system-ui,-apple-system,"Microsoft YaHei",sans-serif;fill:#172033}.paneltitle{font:700 22px system-ui,-apple-system,"Microsoft YaHei",sans-serif;fill:#172033}.label{font:600 17px system-ui,-apple-system,"Microsoft YaHei",sans-serif;fill:#172033}.small{font:14px system-ui,-apple-system,"Microsoft YaHei",sans-serif;fill:#5d687a}.box{stroke-width:2}.user{fill:#eaf2ff;stroke:#3972d6}.edge{fill:#fff4df;stroke:#c98719}.app{fill:#edf8f0;stroke:#3b9561}.data{fill:#f5efff;stroke:#8256c7}.ext{fill:#ffecef;stroke:#c74662}.state{fill:#eef2f7;stroke:#64748b}.arrow{stroke:#64748b;stroke-width:2.5;fill:none;marker-end:url(#arrow)}.dashed{stroke-dasharray:8 7}.mono{font:14px ui-monospace,SFMono-Regular,Consolas,monospace;fill:#405065}
+    </style>
+  </defs>
+  <rect class="bg" width="1800" height="2020"/>
+  <text class="title" x="40" y="52">HydraStore｜当前架构与核心 Workflow</text>
+  <text class="small" x="40" y="82">源码快照：main@807c23bc833f2ec8dd0b7a33fbff27359dbeb7a3 · 2026-09-06</text>
+
+  <rect class="panel" x="30" y="110" width="1740" height="500" rx="16"/>
+  <text class="paneltitle" x="58" y="148">1. 总体架构与请求入口</text>
+  <rect class="box user" x="70" y="235" width="220" height="84" rx="12"/>
+  <text class="label" x="180" y="267" text-anchor="middle">用户浏览器</text><text class="small" x="180" y="291" text-anchor="middle">React 18 + Ant Design</text>
+  <rect class="box edge" x="360" y="210" width="290" height="135" rx="12"/>
+  <text class="label" x="505" y="245" text-anchor="middle">Nginx</text><text class="small" x="505" y="271" text-anchor="middle">HTTPS 443 / HTTP redirect</text><text class="small" x="505" y="294" text-anchor="middle">静态 React + FastDFS module</text><text class="mono" x="505" y="321" text-anchor="middle">/api/object/* → :10020</text>
+  <rect class="box app" x="760" y="175" width="315" height="112" rx="12"/>
+  <text class="label" x="917" y="211" text-anchor="middle">hydrastore_gateways</text><text class="small" x="917" y="236" text-anchor="middle">least_conn · 双实例 · 16 workers/实例</text><text class="small" x="917" y="262" text-anchor="middle">V2 init/part/status/commit/download</text>
+  <rect class="box app" x="760" y="365" width="315" height="112" rx="12"/>
+  <text class="label" x="917" y="401" text-anchor="middle">fastcgi_app</text><text class="small" x="917" y="426" text-anchor="middle">legacy CGI :10000-10012</text><text class="small" x="917" y="451" text-anchor="middle">login / upload / share / chunk / ai</text>
+  <rect class="box app" x="1160" y="155" width="245" height="92" rx="12"/>
+  <text class="label" x="1282" y="192" text-anchor="middle">knowledge workers</text><text class="small" x="1282" y="217" text-anchor="middle">parse / Wiki / repair ×4</text>
+  <rect class="box app" x="1160" y="285" width="245" height="92" rx="12"/>
+  <text class="label" x="1282" y="322" text-anchor="middle">index worker</text><text class="small" x="1282" y="347" text-anchor="middle">per-user FAISS publish</text>
+  <rect class="box app" x="1160" y="415" width="245" height="92" rx="12"/>
+  <text class="label" x="1282" y="452" text-anchor="middle">GC worker</text><text class="small" x="1282" y="477" text-anchor="middle">reconcile + delete retry</text>
+  <rect class="box data" x="1490" y="155" width="220" height="92" rx="12"/>
+  <text class="label" x="1600" y="192" text-anchor="middle">MySQL 8</text><text class="small" x="1600" y="217" text-anchor="middle">session / manifest / AI state</text>
+  <rect class="box data" x="1490" y="285" width="220" height="92" rx="12"/>
+  <text class="label" x="1600" y="322" text-anchor="middle">Redis 7</text><text class="small" x="1600" y="347" text-anchor="middle">token / coordination / breaker</text>
+  <rect class="box data" x="1490" y="415" width="220" height="92" rx="12"/>
+  <text class="label" x="1600" y="452" text-anchor="middle">FastDFS</text><text class="small" x="1600" y="477" text-anchor="middle">Tracker + Storage 1/2</text>
+  <path class="arrow" d="M290 277 H360"/><path class="arrow" d="M650 253 H760"/><path class="arrow" d="M650 302 C700 350 700 410 760 410"/>
+  <path class="arrow" d="M1075 230 H1160"/><path class="arrow" d="M1075 421 H1160"/>
+  <path class="arrow" d="M1075 250 C1200 250 1350 190 1490 190"/><path class="arrow" d="M1075 420 C1220 420 1350 330 1490 330"/><path class="arrow" d="M1075 265 C1220 300 1370 455 1490 460"/>
+  <path class="arrow dashed" d="M1405 200 H1490"/><path class="arrow dashed" d="M1405 330 H1490"/><path class="arrow dashed" d="M1405 460 H1490"/>
+  <text class="small" x="76" y="535">中文注释：浏览器只访问 Nginx，URL 决定进入 legacy、V2、静态资源或 FastDFS 直读。</text>
+  <text class="small" x="76" y="562">读图提示：实线是同步主请求；虚线是异步 worker / 状态回写；MySQL 管逻辑状态，FastDFS 管物理 Blob。</text>
+
+  <rect class="panel" x="30" y="640" width="1740" height="390" rx="16"/>
+  <text class="paneltitle" x="58" y="678">2. 上传主流程：小文件 legacy，大文件 HydraStore V2</text>
+  <rect class="box user" x="75" y="750" width="225" height="80" rx="12"/><text class="label" x="187" y="783" text-anchor="middle">uploadImage</text><text class="small" x="187" y="807" text-anchor="middle">计算 digest</text>
+  <rect class="box edge" x="370" y="750" width="225" height="80" rx="12"/><text class="label" x="482" y="783" text-anchor="middle">大小判断</text><text class="small" x="482" y="807" text-anchor="middle">阈值 10 MiB</text>
+  <path class="arrow" d="M300 790 H370"/>
+  <rect class="box state" x="680" y="700" width="270" height="80" rx="12"/><text class="label" x="815" y="733" text-anchor="middle">≤ 10 MiB：legacy</text><text class="small" x="815" y="757" text-anchor="middle">/api/md5 → /api/upload</text>
+  <rect class="box state" x="680" y="850" width="270" height="80" rx="12"/><text class="label" x="815" y="883" text-anchor="middle">&gt; 10 MiB：V2 object</text><text class="small" x="815" y="907" text-anchor="middle">per-part SHA-256</text>
+  <path class="arrow" d="M595 770 H640 V740 H680"/><path class="arrow" d="M595 810 H640 V890 H680"/>
+  <rect class="box app" x="1035" y="700" width="295" height="80" rx="12"/><text class="label" x="1182" y="733" text-anchor="middle">FastDFS whole-file Put</text><text class="small" x="1182" y="757" text-anchor="middle">file_info + user relation</text>
+  <rect class="box app" x="1035" y="850" width="295" height="80" rx="12"/><text class="label" x="1182" y="883" text-anchor="middle">init → part/status → commit</text><text class="small" x="1182" y="907" text-anchor="middle">AIMD + lease + dedup + manifest</text>
+  <path class="arrow" d="M950 740 H1035"/><path class="arrow" d="M950 890 H1035"/>
+  <rect class="box data" x="1415" y="775" width="295" height="80" rx="12"/><text class="label" x="1562" y="808" text-anchor="middle">COMMITTED</text><text class="small" x="1562" y="832" text-anchor="middle">objectId / file relation</text>
+  <path class="arrow" d="M1330 740 C1380 740 1380 815 1415 815"/><path class="arrow" d="M1330 890 C1380 890 1380 815 1415 815"/>
+  <text class="small" x="76" y="976">中文注释：V2 物理 Put 成功并通过 hash 校验后才 READY；commit 才把对象变成可见逻辑对象。</text>
+  <text class="small" x="76" y="1004">一致性注释：manifest、ref_count、用户关系和 parse task 在同一 MySQL 事务内落地。</text>
+
+  <rect class="panel" x="30" y="1060" width="1740" height="380" rx="16"/>
+  <text class="paneltitle" x="58" y="1098">3. 下载、分享、删除与 GC 生命周期</text>
+  <rect class="box user" x="75" y="1155" width="235" height="75" rx="12"/><text class="label" x="192" y="1187" text-anchor="middle">private objectId</text><text class="small" x="192" y="1210" text-anchor="middle">或 shareToken</text>
+  <rect class="box app" x="390" y="1155" width="275" height="75" rx="12"/><text class="label" x="527" y="1187" text-anchor="middle">GetManifest</text><text class="small" x="527" y="1210" text-anchor="middle">按 part_index 取 READY chunks</text>
+  <rect class="box data" x="745" y="1155" width="275" height="75" rx="12"/><text class="label" x="882" y="1187" text-anchor="middle">BlobStore.Get</text><text class="small" x="882" y="1210" text-anchor="middle">FastDFS → stream response</text>
+  <rect class="box user" x="1085" y="1155" width="235" height="75" rx="12"/><text class="label" x="1202" y="1187" text-anchor="middle">浏览器下载</text><text class="small" x="1202" y="1210" text-anchor="middle">legacy URL 仍兼容</text>
+  <path class="arrow" d="M310 1192 H390"/><path class="arrow" d="M665 1192 H745"/><path class="arrow" d="M1020 1192 H1085"/>
+  <rect class="box user" x="75" y="1300" width="235" height="75" rx="12"/><text class="label" x="192" y="1332" text-anchor="middle">object/delete</text><text class="small" x="192" y="1355" text-anchor="middle">DeleteObjectForUser tx</text>
+  <rect class="box edge" x="390" y="1300" width="275" height="75" rx="12"/><text class="label" x="527" y="1332" text-anchor="middle">还有其他引用？</text><text class="small" x="527" y="1355" text-anchor="middle">ref_count / user relation</text>
+  <rect class="box state" x="745" y="1260" width="275" height="75" rx="12"/><text class="label" x="882" y="1292" text-anchor="middle">有：只删关系</text><text class="small" x="882" y="1315" text-anchor="middle">物理 chunk 保留</text>
+  <rect class="box state" x="745" y="1360" width="275" height="75" rx="12"/><text class="label" x="882" y="1392" text-anchor="middle">无：GC_PENDING</text><text class="small" x="882" y="1415" text-anchor="middle">grace period 后再删</text>
+  <path class="arrow" d="M310 1337 H390"/><path class="arrow" d="M665 1330 H745"/><path class="arrow" d="M665 1350 H700 V1397 H745"/>
+  <rect class="box app" x="1085" y="1360" width="235" height="75" rx="12"/><text class="label" x="1202" y="1392" text-anchor="middle">GC worker</text><text class="small" x="1202" y="1415" text-anchor="middle">DELETING → delete/retry</text>
+  <path class="arrow" d="M1020 1397 H1085"/><text class="small" x="76" y="1405">中文注释：删除同时异步 enqueue delete_source；共享引用仍存在时只删关系，不删物理 chunk。</text>
+
+  <rect class="panel" x="30" y="1470" width="1740" height="500" rx="16"/>
+  <text class="paneltitle" x="58" y="1508">4. AI 知识层与语义搜索</text>
+  <rect class="box data" x="75" y="1570" width="225" height="75" rx="12"/><text class="label" x="187" y="1602" text-anchor="middle">ai_parse_task</text><text class="small" x="187" y="1625" text-anchor="middle">parse / compile / repair</text>
+  <rect class="box app" x="355" y="1570" width="235" height="75" rx="12"/><text class="label" x="472" y="1602" text-anchor="middle">knowledge_worker</text><text class="small" x="472" y="1625" text-anchor="middle">lease + epoch</text>
+  <rect class="box ext" x="645" y="1570" width="250" height="75" rx="12"/><text class="label" x="770" y="1602" text-anchor="middle">解析 / DashScope</text><text class="small" x="770" y="1625" text-anchor="middle">Qwen-VL / embedding / text</text>
+  <rect class="box data" x="950" y="1570" width="250" height="75" rx="12"/><text class="label" x="1075" y="1602" text-anchor="middle">evidence generation</text><text class="small" x="1075" y="1625" text-anchor="middle">STAGING → PUBLISHED</text>
+  <rect class="box app" x="1255" y="1570" width="235" height="75" rx="12"/><text class="label" x="1372" y="1602" text-anchor="middle">WikiCompiler</text><text class="small" x="1372" y="1625" text-anchor="middle">JSON patch + citation CAS</text>
+  <path class="arrow" d="M300 1607 H355"/><path class="arrow" d="M590 1607 H645"/><path class="arrow" d="M895 1607 H950"/><path class="arrow" d="M1200 1607 H1255"/>
+  <rect class="box data" x="950" y="1725" width="250" height="75" rx="12"/><text class="label" x="1075" y="1757" text-anchor="middle">index_state DIRTY</text><text class="small" x="1075" y="1780" text-anchor="middle">MarkIndexDirty(user)</text>
+  <rect class="box app" x="1255" y="1725" width="235" height="75" rx="12"/><text class="label" x="1372" y="1757" text-anchor="middle">index worker</text><text class="small" x="1372" y="1780" text-anchor="middle">build immutable snapshot</text>
+  <rect class="box data" x="1545" y="1725" width="165" height="75" rx="12"/><text class="label" x="1627" y="1757" text-anchor="middle">FAISS</text><text class="small" x="1627" y="1780" text-anchor="middle">published gen</text>
+  <path class="arrow dashed" d="M1075 1645 V1725"/><path class="arrow" d="M1200 1762 H1255"/><path class="arrow" d="M1490 1762 H1545"/>
+  <rect class="box user" x="75" y="1860" width="225" height="75" rx="12"/><text class="label" x="187" y="1892" text-anchor="middle">/api/ai?cmd=search</text><text class="small" x="187" y="1915" text-anchor="middle">query → embedding</text>
+  <rect class="box app" x="355" y="1860" width="235" height="75" rx="12"/><text class="label" x="472" y="1892" text-anchor="middle">published FAISS</text><text class="small" x="472" y="1915" text-anchor="middle">top-30 stable IDs</text>
+  <rect class="box data" x="645" y="1860" width="250" height="75" rx="12"/><text class="label" x="770" y="1892" text-anchor="middle">MySQL hydration</text><text class="small" x="770" y="1915" text-anchor="middle">user filter + snippets/citations</text>
+  <rect class="box user" x="950" y="1860" width="250" height="75" rx="12"/><text class="label" x="1075" y="1892" text-anchor="middle">files + Wiki results</text><text class="small" x="1075" y="1915" text-anchor="middle">只读已发布快照</text>
+  <path class="arrow" d="M300 1897 H355"/><path class="arrow" d="M590 1897 H645"/><path class="arrow" d="M895 1897 H950"/>
+  <text class="small" x="1255" y="1900">中文注释：失败时清理 staging，保留旧 published generation；只有 PUBLISHED 才能被搜索读取。</text>
+  <text class="small" x="40" y="2000">静态图为离线概览；完整 Mermaid 源图、中文注释、源码行号证据和未验证项见 docs/ai/architecture-workflows.md。</text>
+</svg>

@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HydraStore｜当前架构与核心 Workflow</title>
+  <style>
+    :root { color-scheme: light; --bg:#f7f9fc; --card:#fff; --ink:#172033; --muted:#5d687a; --line:#dce3ed; }
+    :root.dark { color-scheme: dark; --bg:#111827; --card:#1f2937; --ink:#eef2ff; --muted:#a9b4c7; --line:#374151; }
+    * { box-sizing: border-box; }
+    body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.55 system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif; }
+    header { position:sticky; top:0; z-index:2; padding:20px 5vw 14px; background:color-mix(in srgb, var(--bg) 92%, transparent); backdrop-filter:blur(12px); border-bottom:1px solid var(--line); }
+    h1 { margin:0 0 4px; font-size:26px; }
+    header p { margin:0; color:var(--muted); }
+    button { border:1px solid var(--line); border-radius:8px; background:var(--card); color:var(--ink); padding:7px 12px; cursor:pointer; }
+    #theme { float:right; margin-top:-34px; }
+    main { width:min(1500px, 92vw); margin:24px auto 56px; }
+    section { margin:0 0 28px; padding:20px; background:var(--card); border:1px solid var(--line); border-radius:14px; box-shadow:0 8px 24px rgba(35,50,80,.06); }
+    h2 { margin:0 0 12px; font-size:20px; }
+    .note { color:var(--muted); margin:0 0 14px; }
+    .mermaid { overflow:auto; }
+    .legend { display:flex; flex-wrap:wrap; gap:8px 18px; margin-top:12px; color:var(--muted); font-size:13px; }
+    .dot { display:inline-block; width:10px; height:10px; border-radius:50%; margin-right:5px; }
+    .source { margin-top:12px; color:var(--muted); font-size:13px; }
+    code { color:inherit; }
+  </style>
+</head>
+<body>
+  <header>
+    <button id="theme" type="button">切换深色</button>
+    <h1>HydraStore｜当前架构与核心 Workflow</h1>
+    <p>源码快照：main@807c23bc833f2ec8dd0b7a33fbff27359dbeb7a3 · 2026-09-06</p>
+  </header>
+  <main>
+    <section>
+      <h2>1. 总体架构与请求入口</h2>
+      <p class="note">当前实现是 legacy 兼容链路 + HydraStore V2 对象链路 + 异步 AI 知识链路的混合架构。</p>
+      <div class="mermaid">
+flowchart LR
+  %% 中文注释：浏览器只访问 Nginx，Nginx 按 URL 分流；MySQL 管逻辑状态，FastDFS 管物理 Blob。
+  U["浏览器<br/>React 18"] -->|HTTPS| N["Nginx<br/>443 / 80 redirect<br/>静态资源 + FastDFS module"]
+  N -->|legacy /api/*| L["fastcgi_app<br/>CGI 10000-10012<br/>login/upload/share/chunk/ai"]
+  N -->|/api/object/*| LB["least_conn upstream<br/>hydrastore_gateways :10020"]
+  LB --> G1["Gateway 1<br/>16 workers"]
+  LB --> G2["Gateway 2<br/>16 workers"]
+  N -->|/group*/M*| T["FastDFS Tracker"]
+  L --> DB["MySQL<br/>legacy + V2 + AI V2"]
+  G1 --> DB
+  G2 --> DB
+  L --> R["Redis<br/>token / legacy coordination"]
+  G1 --> R
+  G2 --> R
+  G1 --> T
+  G2 --> T
+  T --> S1["Storage 1"]
+  T --> S2["Storage 2"]
+  L --> X["DashScope"]
+  L --> F["FAISS"]
+  KW["knowledge_worker ×4"] --> DB
+  KW --> T
+  KW --> X
+  KW --> F
+  IW["knowledge_index_worker"] --> DB
+  IW --> F
+  GC["storage_gc_worker"] --> DB
+  GC --> T
+  M["db_migrate<br/>hydra_v2 + hydra_ai_v2"] --> DB
+  NOTE["中文注释：legacy 与 V2 并存；Redis 是协调状态，不是对象元数据源"]
+      </div>
+      <div class="legend"><span><i class="dot" style="background:#3972d6"></i>用户/边缘</span><span><i class="dot" style="background:#3b9561"></i>业务/worker</span><span><i class="dot" style="background:#8256c7"></i>状态与存储</span><span><i class="dot" style="background:#c74662"></i>外部 AI</span></div>
+    </section>
+
+    <section>
+      <h2>2. V2 大文件上传：init → part → status → commit</h2>
+      <p class="note">物理 Blob 先发布，SHA-256 校验和 lease fencing 通过后才把 part 标为 READY；重复 commit 返回同一对象。</p>
+      <div class="mermaid">
+sequenceDiagram
+  autonumber
+  %% 中文注释：part 必须经过物理写入、哈希校验和 lease fencing，才能进入 READY。
+  participant UI as React images.js
+  participant N as Nginx
+  participant GW as Gateway :10020
+  participant DB as MySQL MetadataStore
+  participant DFS as FastDFS
+  UI->>N: POST /api/object/init digest + part specs
+  N->>GW: FastCGI
+  GW->>DB: InitOrResume transaction
+  DB-->>UI: uploadId + uploadable/waiting/reused
+  Note over UI,DB: 中文注释：init 只登记上传计划，不代表对象已经提交
+  loop AIMD window
+    UI->>N: POST /api/object/part index + sha256
+    N->>GW: bounded body
+    GW->>DB: ClaimPartUpload FOR UPDATE
+    GW->>DFS: streaming Put(body)
+    DFS-->>GW: backend_file_id
+    GW->>GW: verify bytes + SHA-256
+    GW->>DB: RecordPartBackend + MarkPartReady
+    GW-->>UI: success or 429/503/retry
+    UI->>UI: record RTT/failure/timeout; tune cwnd
+  end
+  UI->>N: POST /api/object/commit uploadId
+  N->>GW: FastCGI
+  GW->>DB: Commit transaction; all parts READY
+  DB->>DB: manifest + refs + user relation + parse task
+  DB-->>UI: COMMITTED objectId / manifestId
+  Note over UI,DB: 中文注释：commit 是原子事务；重复提交复用同一 objectId
+      </div>
+    </section>
+
+    <section>
+      <h2>3. 下载、分享、删除与 GC</h2>
+      <div class="mermaid">
+flowchart LR
+  %% 中文注释：下载按 manifest 顺序读分片；删除先删引用，物理删除由 GC 延迟执行。
+  P["private download<br/>objectId"] --> Q["Gateway auth +<br/>GetManifest"]
+  S["share download<br/>shareToken"] --> Q2["GetSharedManifest"]
+  Q --> R["ordered manifest_chunk"]
+  Q2 --> R
+  R --> G["BlobStore.Get each READY chunk"] --> H["stream to browser"]
+  D["object/delete"] --> T["DeleteObjectForUser tx"]
+  T --> Z{"other references?"}
+  Z -->|yes| K["remove user relation;<br/>preserve physical chunks"]
+  Z -->|no| C["ref_count--;<br/>GC_PENDING + grace period"]
+  C --> W["GC reconcile + ClaimGc"]
+  W --> X{"no active upload and expired?"}
+  X -->|yes| Y["DELETING → FastDFS Delete"]
+  X -->|no| C
+  Y -->|success| E["FinishGc removes DB candidate"]
+  Y -->|failure| C2["GC_PENDING + exponential retry"]
+  D -. enqueue delete_source .-> AI["AI source invalidation / wiki repair"]
+  NOTE["中文注释：有共享引用时保留物理 chunk；零引用且无活跃上传才进入 DELETING"]
+      </div>
+    </section>
+
+    <section>
+      <h2>4. AI 知识层：异步证据、Wiki 和索引</h2>
+      <div class="mermaid">
+flowchart TD
+  %% 中文注释：AI 采用 staging → publish；旧 published generation 在新结果完成前继续服务。
+  A["Commit 或 /api/ai?cmd=describe"] -. enqueue .-> T["ai_parse_task"]
+  T --> W["knowledge_worker<br/>lease + epoch"]
+  W --> R["读取 manifest 或 legacy source"]
+  R --> P["图片 Qwen-VL / 文本 extractor"]
+  P --> C["deterministic chunker"]
+  C --> E["DashScope embedding"]
+  E --> S["staging knowledge_chunk + vector"]
+  S --> V["PublishEvidenceGeneration tx<br/>旧 generation 保留到发布"]
+  V -.-> T2["compile_wiki"]
+  V -.-> D["MarkIndexDirty"]
+  T2 --> WC["WikiCompiler<br/>JSON patch + citation validation"]
+  WC --> WP["page lock + base revision CAS<br/>publish revision + claims + links"]
+  WP -.-> D
+  D --> I["knowledge_index_worker"]
+  I --> F["immutable per-user FAISS snapshot<br/>stable knowledge_vector.id"]
+  F --> Pub["PublishIndexGeneration lease fence"]
+  W -. failure .-> Keep["abort staging; keep old published evidence"]
+  NOTE["中文注释：上传响应不等待 AI；worker 通过 lease + epoch 防止旧任务覆盖新结果"]
+      </div>
+    </section>
+
+    <section>
+      <h2>5. AI 搜索：已发布快照 + MySQL hydration</h2>
+      <div class="mermaid">
+sequenceDiagram
+  %% 中文注释：搜索只读已发布 FAISS 快照，MySQL 负责用户过滤、片段和引用补全。
+  participant UI as Home / Knowledge
+  participant AI as ai_cgi :10012
+  participant DS as DashScope
+  participant DB as MySQL
+  participant F as FAISS snapshot
+  UI->>AI: /api/ai?cmd=search query
+  AI->>DS: embed(query)
+  DS-->>AI: normalized vector
+  AI->>DB: LoadIndexState published generation
+  AI->>F: load cached per-user snapshot
+  F-->>AI: top-30 stable vector IDs + scores
+  AI->>DB: read tx; hydrate IDs + Wiki claims
+  DB-->>AI: user-filtered snippets/citations
+  AI-->>UI: files matches + wiki results
+  Note over AI,DB: 中文注释：search 不 rebuild、不 append，只读 published snapshot
+      </div>
+    </section>
+
+    <p class="source">完整 Mermaid 源图与证据索引见仓库中的 <code>docs/ai/architecture-workflows.md</code>；离线静态版本见同目录的 SVG。</p>
+  </main>
+  <script type="module">
+    import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+    mermaid.initialize({ startOnLoad: true, securityLevel: 'strict', theme: 'neutral', flowchart: { htmlLabels: true, curve: 'basis' } });
+    document.getElementById('theme').addEventListener('click', () => {
+      document.documentElement.classList.toggle('dark');
+      document.getElementById('theme').textContent = document.documentElement.classList.contains('dark') ? '切换浅色' : '切换深色';
+    });
+  </script>
+</body>
+</html>
