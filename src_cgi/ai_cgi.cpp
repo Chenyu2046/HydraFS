@@ -73,8 +73,30 @@ struct CachedIndex {
     std::uint64_t access = 0;
 };
 
+class ReadTransactionGuard {
+public:
+    explicit ReadTransactionGuard(hydrastore::KnowledgeStore *store) : store_(store) {}
+    ~ReadTransactionGuard() { if (active_) store_->RollbackSourceRead(); }
+
+    bool Acquire() {
+        active_ = store_ && store_->BeginReadTransaction();
+        return active_;
+    }
+
+    bool Commit() {
+        if (!active_) return true;
+        if (!store_->CommitSourceRead()) return false;
+        active_ = false;
+        return true;
+    }
+
+private:
+    hydrastore::KnowledgeStore *store_ = nullptr;
+    bool active_ = false;
+};
+
 std::mutex g_index_cache_mutex;
-std::map<std::pair<std::string, std::int64_t>, CachedIndex> g_index_cache;
+std::map<std::pair<std::string, std::string>, CachedIndex> g_index_cache;
 std::uint64_t g_index_cache_access = 0;
 
 std::size_t SearchCacheCapacity() {
@@ -93,7 +115,7 @@ bool LoadCachedIndex(const std::string &user, std::int64_t generation,
                      std::size_t capacity,
                      std::shared_ptr<hydrastore::FaissSnapshot> *result) {
     if (!result || generation <= 0 || dimension <= 0) return false;
-    const std::pair<std::string, std::int64_t> key(user, generation);
+    const std::pair<std::string, std::string> key(user, path);
     std::lock_guard<std::mutex> lock(g_index_cache_mutex);
     const auto existing = g_index_cache.find(key);
     if (existing != g_index_cache.end()) {
@@ -255,8 +277,8 @@ int HandleSearch(cJSON *root) {
     norm = std::sqrt(norm);
     if (norm == 0.0) { Error(1, "embedding failed"); return -1; }
     for (float &value : embedding) value = static_cast<float>(value / norm);
-    std::int64_t published = 0, dirty = 0;
-    if (!store.LoadIndexState(user, &published, &dirty)) { Error(1, "index state unavailable"); return -1; }
+    std::int64_t published = 0, dirty = 0, published_lease_epoch = 0;
+    if (!store.LoadIndexState(user, &published, &dirty, &published_lease_epoch)) { Error(1, "index state unavailable"); return -1; }
     cJSON *response = cJSON_CreateObject();
     cJSON_AddNumberToObject(response, "code", 0);
     cJSON_AddNumberToObject(response, "index_generation", static_cast<double>(published));
@@ -267,7 +289,8 @@ int HandleSearch(cJSON *root) {
         Print(response); cJSON_Delete(response); return 0;
     }
     const std::string path = Cfg("faiss", "user_index_dir", "/data/faiss/users") + "/" +
-        UserHash(user) + "/vectors." + std::to_string(published) + ".faiss";
+        UserHash(user) + "/vectors." + std::to_string(published) +
+        (published_lease_epoch > 0 ? "." + std::to_string(published_lease_epoch) : std::string()) + ".faiss";
     std::shared_ptr<hydrastore::FaissSnapshot> snapshot;
     if (!LoadCachedIndex(user, published, path, dimension, SearchCacheCapacity(), &snapshot)) {
         cJSON_Delete(response); Error(2, "index unavailable"); return -1;
@@ -284,6 +307,10 @@ int HandleSearch(cJSON *root) {
         if (ids[i] > 0 && std::isfinite(scores[i]) && scores[i] >= min_score) {
             filtered_ids.push_back(ids[i]); score_by_id[ids[i]] = scores[i];
         }
+    }
+    ReadTransactionGuard search_read(&store);
+    if (!search_read.Acquire()) {
+        cJSON_Delete(response); Error(1, "search read unavailable"); return -1;
     }
     std::vector<hydrastore::SearchHydration> hydrated;
     if (!filtered_ids.empty() && !store.LoadSearchHydration(user, filtered_ids, &hydrated)) {
@@ -345,7 +372,7 @@ int HandleSearch(cJSON *root) {
             cJSON_AddItemToArray(wiki, page);
         }
     }
-    cJSON_AddNumberToObject(response,"count",cJSON_GetArraySize(files));cJSON_AddItemToObject(response,"files",files);cJSON_AddItemToObject(response,"wiki",wiki);Print(response);cJSON_Delete(response);return 0;
+    cJSON_AddNumberToObject(response,"count",cJSON_GetArraySize(files));cJSON_AddItemToObject(response,"files",files);cJSON_AddItemToObject(response,"wiki",wiki);Print(response);const bool committed=search_read.Commit();cJSON_Delete(response);return committed?0:-1;
 }
 
 int HandleFileCard(cJSON *root) {
@@ -355,18 +382,27 @@ int HandleFileCard(cJSON *root) {
 }
 
 int HandleWiki(cJSON *root) {
-    std::string user,token;if(!Required(root,&user,&token)){Error(4,"token error");return -1;}const std::string md5=Field(root,"md5");hydrastore::KnowledgeStore store=MakeStore();std::vector<hydrastore::WikiPageView> pages;if(!store.Connect()||!store.LoadWikiForSource(user,md5,&pages)){Error(1,"wiki unavailable");return -1;}
+    std::string user,token;if(!Required(root,&user,&token)){Error(4,"token error");return -1;}
+    const std::string md5=Field(root,"md5");hydrastore::KnowledgeStore store=MakeStore();
+    std::vector<hydrastore::WikiPageView> pages;
+    if(!store.Connect()||!store.BeginSourceRead(user,md5)||!store.LoadWikiForSource(user,md5,&pages)){
+        store.RollbackSourceRead();Error(1,"wiki unavailable");return -1;
+    }
     cJSON *response=cJSON_CreateObject();cJSON_AddNumberToObject(response,"code",0);cJSON *array=cJSON_CreateArray();for(const auto &page:pages)cJSON_AddItemToArray(array,PageJson(page));cJSON_AddItemToObject(response,"pages",array);
     hydrastore::FileKnowledgeCard card;
     if (store.LoadFileCard(user, md5, &card)) {
         cJSON *source=cJSON_CreateObject();cJSON_AddStringToObject(source,"md5",card.md5.c_str());cJSON_AddStringToObject(source,"filename",card.filename.c_str());cJSON_AddStringToObject(source,"type",card.type.c_str());cJSON_AddNumberToObject(source,"size",static_cast<double>(card.size));cJSON_AddStringToObject(source,"url",card.url.c_str());cJSON_AddNumberToObject(source,"evidence_ready",card.evidence_ready?1:0);cJSON_AddNumberToObject(source,"partial_source",card.partial_source?1:0);cJSON_AddItemToObject(response,"source",source);
     }
-    if(!pages.empty())cJSON_AddItemToObject(response,"data",PageJson(pages.front()));else cJSON_AddNullToObject(response,"data");Print(response);cJSON_Delete(response);return 0;
+    if(!pages.empty())cJSON_AddItemToObject(response,"data",PageJson(pages.front()));else cJSON_AddNullToObject(response,"data");Print(response);const bool committed=store.CommitSourceRead();cJSON_Delete(response);return committed?0:-1;
 }
 
 int HandleLinks(cJSON *root,bool backlinks) {
-    std::string user,token;if(!Required(root,&user,&token)){Error(4,"token error");return -1;}const std::string md5=Field(root,"md5");hydrastore::KnowledgeStore store=MakeStore();std::vector<hydrastore::BacklinkView> links;if(!store.Connect()||(backlinks?!store.LoadBacklinks(user,md5,&links):!store.LoadRelated(user,md5,&links))){Error(1,"links unavailable");return -1;}
-    cJSON *response=cJSON_CreateObject();cJSON_AddNumberToObject(response,"code",0);cJSON *array=cJSON_CreateArray();for(const auto &link:links){cJSON *item=cJSON_CreateObject();cJSON_AddStringToObject(item,"md5",link.md5.c_str());cJSON_AddStringToObject(item,"page_key",link.page_key.c_str());cJSON_AddStringToObject(item,"title",link.title.c_str());cJSON_AddStringToObject(item,"concept",link.concept.c_str());cJSON_AddNumberToObject(item,"page_id",static_cast<double>(link.page_id));cJSON_AddItemToArray(array,item);}cJSON_AddItemToObject(response,"links",array);Print(response);cJSON_Delete(response);return 0;
+    std::string user,token;if(!Required(root,&user,&token)){Error(4,"token error");return -1;}
+    const std::string md5=Field(root,"md5");hydrastore::KnowledgeStore store=MakeStore();std::vector<hydrastore::BacklinkView> links;
+    if(!store.Connect()||!store.BeginSourceRead(user,md5)||(backlinks?!store.LoadBacklinks(user,md5,&links):!store.LoadRelated(user,md5,&links))){
+        store.RollbackSourceRead();Error(1,"links unavailable");return -1;
+    }
+    cJSON *response=cJSON_CreateObject();cJSON_AddNumberToObject(response,"code",0);cJSON *array=cJSON_CreateArray();for(const auto &link:links){cJSON *item=cJSON_CreateObject();cJSON_AddStringToObject(item,"md5",link.md5.c_str());cJSON_AddStringToObject(item,"page_key",link.page_key.c_str());cJSON_AddStringToObject(item,"title",link.title.c_str());cJSON_AddStringToObject(item,"concept",link.concept.c_str());cJSON_AddNumberToObject(item,"page_id",static_cast<double>(link.page_id));cJSON_AddItemToArray(array,item);}cJSON_AddItemToObject(response,"links",array);Print(response);const bool committed=store.CommitSourceRead();cJSON_Delete(response);return committed?0:-1;
 }
 
 int HandleGetApiKey(cJSON *root) {

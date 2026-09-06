@@ -36,6 +36,10 @@ public:
 
     bool LoadSourceObject(const std::string &user, const std::string &md5,
                           SourceObject *source);
+    bool BeginReadTransaction();
+    bool BeginSourceRead(const std::string &user, const std::string &md5);
+    bool CommitSourceRead();
+    void RollbackSourceRead();
     bool SourceRelationExists(const std::string &user, const std::string &md5,
                               bool *exists);
     bool LoadApiKey(const std::string &user, std::string *api_key);
@@ -52,7 +56,10 @@ public:
     bool PublishEvidenceGeneration(const SourceObject &source,
                                    std::int64_t generation, int chunk_count,
                                    bool truncated, std::int64_t source_bytes,
-                                   const KnowledgeTaskClaim *claim = nullptr);
+                                   const KnowledgeTaskClaim *claim = nullptr,
+                                   const std::string &legacy_description = {},
+                                   const std::string &legacy_summary = {},
+                                   const std::string &legacy_model = {});
     bool AbortEvidenceGeneration(const SourceObject &source,
                                  std::int64_t generation,
                                  const std::string &error,
@@ -67,15 +74,19 @@ public:
 
     bool MarkIndexDirty(const std::string &user);
     bool LoadIndexState(const std::string &user, std::int64_t *published,
-                        std::int64_t *dirty);
+                        std::int64_t *dirty,
+                        std::int64_t *published_lease_epoch = nullptr);
     bool ClaimDirtyIndex(const std::string &worker_id, std::string *user,
-                        std::int64_t *generation);
+                        std::int64_t *generation,
+                        std::int64_t *lease_epoch);
     bool PublishIndexGeneration(const std::string &user,
                                 const std::string &worker_id,
-                                std::int64_t generation);
+                                std::int64_t generation,
+                                std::int64_t lease_epoch);
     bool FailIndexGeneration(const std::string &user,
                              const std::string &worker_id,
                              std::int64_t generation,
+                             std::int64_t lease_epoch,
                              const std::string &error);
     bool LoadActiveVectors(const std::string &user,
                            std::vector<KnowledgeVectorRecord> *vectors);
@@ -115,9 +126,10 @@ public:
                           const std::string &model,
                           const std::string &compiler_version,
                           int embedding_dimension, std::string *error,
-                          bool *continued = nullptr);
+                           bool *continued = nullptr);
     bool DeleteSourceKnowledge(const std::string &user, const std::string &md5,
-                               std::string *error);
+                               std::string *error,
+                               const KnowledgeTaskClaim *claim = nullptr);
 
 private:
     bool Exec(const std::string &sql);

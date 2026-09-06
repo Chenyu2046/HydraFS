@@ -51,7 +51,9 @@ evidence, creates deterministic overlapping chunks, stores staging vectors,
 and publishes one evidence generation atomically. `knowledge_index_worker`
 builds immutable per-user `IndexIDMap2(IndexFlatIP)` snapshots using
 `knowledge_vector.id` as the stable label, then advances
-`knowledge_index_state.published_generation`.
+`knowledge_index_state.published_generation`; each claimed build also carries a
+monotonic lease epoch, which is part of the FAISS artifact path and publish
+fence so an expired worker cannot overwrite a newer snapshot.
 
 `ai_cgi` only reads the published generation during search and hydrates FAISS
 IDs with user-filtered SQL. Wiki compilation is an asynchronous second task:

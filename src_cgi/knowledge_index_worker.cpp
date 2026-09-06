@@ -45,10 +45,13 @@ int main() {
     while (running) {
         std::string user;
         std::int64_t generation = 0;
-        if (!store.ClaimDirtyIndex(worker, &user, &generation)) { sleep(2); continue; }
+        std::int64_t lease_epoch = 0;
+        if (!store.ClaimDirtyIndex(worker, &user, &generation, &lease_epoch)) { sleep(2); continue; }
         std::vector<hydrastore::KnowledgeVectorRecord> records;
         if (!store.LoadActiveVectors(user, &records)) {
-            store.FailIndexGeneration(user, worker, generation, "active vector load failed");
+            if (!store.FailIndexGeneration(user, worker, generation, lease_epoch, "active vector load failed")) {
+                LOG("cgi", "knowledge_index_worker", "user_hash=%s generation=%lld epoch=%lld stage=fail_fenced\n", UserDirectory(root, user).c_str(), static_cast<long long>(generation), static_cast<long long>(lease_epoch));
+            }
             continue;
         }
         std::vector<std::int64_t> ids;
@@ -70,7 +73,9 @@ int main() {
                       << " actual_dimension=" << record.dimension
                       << " actual_size=" << record.embedding.size()
                       << " actual_bytes=" << record.embedding_bytes;
-                store.FailIndexGeneration(user, worker, generation, error.str());
+                if (!store.FailIndexGeneration(user, worker, generation, lease_epoch, error.str())) {
+                    LOG("cgi", "knowledge_index_worker", "user_hash=%s generation=%lld epoch=%lld stage=fail_fenced\n", UserDirectory(root, user).c_str(), static_cast<long long>(generation), static_cast<long long>(lease_epoch));
+                }
                 ids.clear();
                 vectors.clear();
                 invalid = true;
@@ -79,13 +84,17 @@ int main() {
             ids.push_back(record.id); vectors.push_back(record.embedding);
         }
         if (ids.size() != records.size()) continue;
-        const std::string path = UserDirectory(root, user) + "/vectors." + std::to_string(generation) + ".faiss";
+        const std::string path = UserDirectory(root, user) + "/vectors." + std::to_string(generation) + "." + std::to_string(lease_epoch) + ".faiss";
         if (!hydrastore::FaissSnapshot::Build(path, dimension, ids, vectors)) {
-            store.FailIndexGeneration(user, worker, generation, "FAISS snapshot build failed");
+            if (!store.FailIndexGeneration(user, worker, generation, lease_epoch, "FAISS snapshot build failed")) {
+                LOG("cgi", "knowledge_index_worker", "user_hash=%s generation=%lld epoch=%lld stage=fail_fenced\n", UserDirectory(root, user).c_str(), static_cast<long long>(generation), static_cast<long long>(lease_epoch));
+            }
             continue;
         }
-        if (!store.PublishIndexGeneration(user, worker, generation)) {
-            store.FailIndexGeneration(user, worker, generation, "index generation superseded or publish failed");
+        if (!store.PublishIndexGeneration(user, worker, generation, lease_epoch)) {
+            if (!store.FailIndexGeneration(user, worker, generation, lease_epoch, "index generation superseded or publish failed")) {
+                LOG("cgi", "knowledge_index_worker", "user_hash=%s generation=%lld epoch=%lld stage=publish_fenced\n", UserDirectory(root, user).c_str(), static_cast<long long>(generation), static_cast<long long>(lease_epoch));
+            }
         }
     }
     return 0;

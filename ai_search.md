@@ -344,26 +344,26 @@ CREATE TABLE IF NOT EXISTS `user_file_ai_desc` (
 
 ### 4.1 存储方式
 
-API Key 完全在浏览器端管理：
+API Key 由服务端解析，优先使用进程环境变量 `DASHSCOPE_API_KEY`。配置文件中的
+`dashscope.api_key` 默认保持为空；按用户保存的数据库 key 和请求体 `api_key`
+仅作为兼容旧客户端的后备来源，服务端不会记录 key。
 
 ```
-localStorage key: dashscope_api_key_<username>
+legacy localStorage key: dashscope_api_key_<username>
 ```
 
-- 不经过服务器存储，不上传到后端数据库
-- 每次 API 请求时放入请求体的 `api_key` 字段
+- 新客户端不应把 key 放入请求体；旧客户端仍可发送 `api_key` 作为兼容后备
 - 前端显示为 `Input.Password`，带 "保存" / "清除" 按钮
 
 ### 4.2 后端校验
 
 ```cpp
-static const char *resolve_api_key(cJSON *apikey_item) {
-    // 只从请求 JSON body 中读取
-    // 非 NULL 且非空字符串则返回，否则返回 NULL
+static std::string resolve_api_key(cJSON *apikey_item, const std::string &user) {
+    // DASHSCOPE_API_KEY → 配置文件 → 用户数据库 → 旧请求体字段
 }
 ```
 
-- `api_key` 缺失或为空 → `{"code":1,"msg":"missing api_key"}`
+- 所有服务端来源均为空 → `{"code":1,"msg":"missing api_key"}`
 - `rebuild` 命令不需要 `api_key`（不调用 AI 接口）
 
 ### 4.3 API Key 流转时序
@@ -380,9 +380,7 @@ static const char *resolve_api_key(cJSON *apikey_item) {
     │
     └── API 请求时
           │
-          ├── 从 apiKeyLoaded 取值（而非 apiKeyInput）
-          ├── 放入请求体 { ..., api_key: apiKeyLoaded }
-          └── 后端 resolve_api_key() 提取并透传给 DashScope
+          └── 新客户端不发送 api_key；服务端按环境变量 → 配置 → 用户数据库解析
 ```
 
 ---
@@ -398,7 +396,7 @@ static const char *resolve_api_key(cJSON *apikey_item) {
   "md5": "xxx",
   "filename": "demo.png",
   "type": "png",
-  "api_key": "sk-xxx",
+  "api_key": "<legacy-client-key>",
   "force": false,
   "skip_rebuild": false
 }
@@ -411,7 +409,7 @@ static const char *resolve_api_key(cJSON *apikey_item) {
 | `md5` | 是 | 文件 MD5 |
 | `filename` | 是 | 文件名 |
 | `type` | 否 | 文件类型后缀 |
-| `api_key` | 是 | DashScope API Key |
+| `api_key` | 否（legacy） | 仅旧客户端兼容字段；服务端优先使用环境变量/配置/用户数据库 |
 | `force` | 否 | 是否强制重新生成（默认 false） |
 | `skip_rebuild` | 否 | 强制模式下是否跳过索引重建（默认 false） |
 
@@ -423,11 +421,12 @@ handle_describe(post_data)
     ├── 1. cJSON_Parse(post_data)
     │     └── 失败 → {"code":1,"msg":"invalid json"}
     │
-    ├── 2. 提取字段：user, token, md5, filename, type, api_key, force, skip_rebuild
+    ├── 2. 提取字段：user, token, md5, filename, type, api_key(legacy), force, skip_rebuild
     │     └── 缺少必填字段 → {"code":1,"msg":"missing fields"}
     │
     ├── 3. resolve_api_key()
-    │     └── 为空 → {"code":1,"msg":"missing api_key"}
+    │     └── 环境变量 → 配置 → 用户数据库 → 请求体 legacy 字段
+    │         全部为空 → {"code":1,"msg":"missing api_key"}
     │
     ├── 4. verify_token(user, token)
     │     └── 失败 → {"code":4,"msg":"token error"}
@@ -554,7 +553,7 @@ handle_describe(post_data)
   "user": "xxx",
   "token": "xxx",
   "query": "红色沙发上的猫",
-  "api_key": "sk-xxx"
+  "api_key": "<legacy-client-key>"
 }
 ```
 
@@ -563,15 +562,15 @@ handle_describe(post_data)
 | `user` | 是 | 用户名 |
 | `token` | 是 | 登录 token |
 | `query` | 是 | 自然语言搜索文本 |
-| `api_key` | 是 | DashScope API Key |
+| `api_key` | 否（legacy） | 仅旧客户端兼容字段；服务端优先使用环境变量/配置/用户数据库 |
 
 ### 6.2 完整处理流程图
 
 ```
 handle_search(post_data)
     │
-    ├── 1. JSON 解析 + 字段校验 (user, token, query, api_key)
-    │     └── 缺少字段 → {"code":1,"msg":"missing fields / missing api_key / empty query"}
+    ├── 1. JSON 解析 + 字段校验 (user, token, query, api_key 可选)
+    │     └── 缺少字段 → {"code":1,"msg":"missing fields / empty query"}
     │
     ├── 2. verify_token(user, token)
     │     └── 失败 → {"code":4,"msg":"token error"}

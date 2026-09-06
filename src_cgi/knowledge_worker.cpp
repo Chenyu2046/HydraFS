@@ -275,14 +275,12 @@ bool ProcessSource(hydrastore::KnowledgeStore *store, const hydrastore::Knowledg
         }
         ++index;
     }
-    if (!store->PublishEvidenceGeneration(source, generation, static_cast<int>(chunks.size()), truncated, document.extracted_bytes, &task)) {
-        store->AbortEvidenceGeneration(source, generation, "evidence publish failed", &task);
-        return false;
-    }
     const std::string source_text = ReadText(document.text_path, 4096);
-    std::string summary = source_text.substr(0, std::min<std::size_t>(source_text.size(), 2048));
-    store->UpdateLegacyAiRecord(source, source_text, summary, embedding_model);
-    if (!store->EnqueueTask(source.user, source.md5, "compile_wiki", "evidence_ready", false)) {
+    const std::string summary = source_text.substr(0, std::min<std::size_t>(source_text.size(), 2048));
+    if (!store->PublishEvidenceGeneration(source, generation, static_cast<int>(chunks.size()), truncated,
+                                          document.extracted_bytes, &task, source_text, summary,
+                                          embedding_model)) {
+        store->AbortEvidenceGeneration(source, generation, "evidence publish failed", &task);
         return false;
     }
     return true;
@@ -299,7 +297,7 @@ bool ProcessTask(hydrastore::KnowledgeStore *store, const hydrastore::KnowledgeT
     std::string api_key = configured_key;
     if (api_key.empty()) store->LoadApiKey(task.user, &api_key);
     if (task.task_type == "delete_source") {
-        std::string error; return store->DeleteSourceKnowledge(task.user, task.md5, &error);
+        std::string error; return store->DeleteSourceKnowledge(task.user, task.md5, &error, &task);
     }
     if (task.task_type == "compile_wiki" || task.task_type == "repair_wiki") {
         if (retryable && api_key.empty()) *retryable = false;
@@ -358,7 +356,11 @@ int main() {
         bool continued = false;
         const bool ok = ProcessTask(&store, task, embedding_model, vl_model, dimension, configured_key, storage_ip, storage_port, storage_client, &retryable, &skipped, &continued);
         if (ok) {
-            if (!continued) store.FinishTask(task);
+            if (!continued && !store.FinishTask(task)) {
+                LOG("cgi", "knowledge_worker", "task=%lld worker=%s epoch=%lld stage=finish_fenced\n",
+                    static_cast<long long>(task.id), worker_id.c_str(),
+                    static_cast<long long>(task.lease_epoch));
+            }
         } else if (skipped) store.SkipTask(task, "unsupported or empty source");
         else {
             const bool failed = store.FailTask(task, "knowledge task failed", retryable);

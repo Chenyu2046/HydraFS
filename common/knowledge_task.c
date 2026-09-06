@@ -41,7 +41,7 @@ int enqueue_knowledge_task(MYSQL *conn, const char *user, const char *md5,
     const int locked = lock_row && lock_row[0] && atoi(lock_row[0]) == 1;
     mysql_free_result(lock_result);
     if (!locked) goto FAIL;
-    snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM ai_parse_task WHERE user='%s' AND md5='%s' AND task_type='%s' AND status IN ('pending','running')", eu, em, et);
+    snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM ai_parse_task WHERE user='%s' AND md5='%s' AND task_type='%s' AND (status='pending' OR (status='running' AND lease_until IS NOT NULL AND lease_until>NOW()))", eu, em, et);
     if (mysql_query(conn, sql) != 0) goto RELEASE_FAIL;
     MYSQL_RES *result = mysql_store_result(conn);
     if (!result) goto RELEASE_FAIL;

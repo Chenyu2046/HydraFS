@@ -161,6 +161,13 @@ int main() {
     std::vector<hydrastore::WikiPageView> immediate_pages;
     assert(cleanup.LoadWikiForSource(delete_user, shared_md5, &immediate_pages));
     assert(immediate_pages.empty());
+    assert(cleanup.EnqueueTask(delete_user, deleted_md5, "delete_source", "fence", true));
+    hydrastore::KnowledgeTaskClaim stale_delete;
+    assert(cleanup.ClaimTask("delete-fence-worker", &stale_delete));
+    assert(Raw(cleanup.Connection(), "UPDATE ai_parse_task SET lease_until=DATE_SUB(NOW(),INTERVAL 1 MINUTE) WHERE id=" + std::to_string(stale_delete.id)));
+    assert(!cleanup.DeleteSourceKnowledge(delete_user, deleted_md5, nullptr, &stale_delete));
+    assert(Scalar(cleanup.Connection(), "SELECT state FROM knowledge_chunk WHERE user='" + delete_user + "' AND md5='" + deleted_md5 + "'") == "PUBLISHED");
+    assert(cleanup.RecoverExpiredTasks());
     assert(cleanup.DeleteSourceKnowledge(delete_user, deleted_md5, nullptr));
     assert(Scalar(cleanup.Connection(), "SELECT state FROM knowledge_chunk WHERE user='" + delete_user + "' AND md5='" + deleted_md5 + "'") == "DELETED");
     assert(Scalar(cleanup.Connection(), "SELECT state FROM llm_wiki_citation WHERE user='" + delete_user + "' AND claim_id=" + shared_claim + " AND chunk_id=" + deleted_chunk) == "STALE");

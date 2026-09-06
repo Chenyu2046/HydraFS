@@ -130,6 +130,8 @@ CREATE TABLE IF NOT EXISTS `knowledge_index_state` (
   `state` varchar(32) NOT NULL DEFAULT 'READY',
   `worker_id` varchar(128) DEFAULT NULL,
   `lease_until` datetime DEFAULT NULL,
+  `lease_epoch` bigint NOT NULL DEFAULT 0,
+  `published_lease_epoch` bigint NOT NULL DEFAULT 0,
   `last_error` text DEFAULT NULL,
   `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`user`), KEY `idx_knowledge_index_dirty` (`state`,`lease_until`,`dirty_generation`)
@@ -161,6 +163,8 @@ CALL hydrastore_ai_v2_add_column('ai_parse_task','started_at','datetime DEFAULT 
 CALL hydrastore_ai_v2_add_column('ai_parse_task','finished_at','datetime DEFAULT NULL');
 CALL hydrastore_ai_v2_add_index('ai_parse_task','idx_ai_parse_claim','INDEX `idx_ai_parse_claim` (`status`,`next_retry_at`,`lease_until`,`created_at`)');
 CALL hydrastore_ai_v2_add_index('ai_parse_task','idx_ai_parse_fence','INDEX `idx_ai_parse_fence` (`id`,`status`,`worker_id`,`lease_epoch`)');
+CALL hydrastore_ai_v2_add_column('knowledge_index_state','lease_epoch','bigint NOT NULL DEFAULT 0');
+CALL hydrastore_ai_v2_add_column('knowledge_index_state','published_lease_epoch','bigint NOT NULL DEFAULT 0');
 
 DROP PROCEDURE hydrastore_ai_v2_add_column;
 DROP PROCEDURE hydrastore_ai_v2_add_index;

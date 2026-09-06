@@ -34,6 +34,8 @@ def main() -> int:
 
     assert 'getenv("DASHSCOPE_API_KEY")' in ai_cgi
     assert 'getenv("DASHSCOPE_API_KEY")' in worker
+    assert ai_cgi.index('const std::string configured = GlobalApiKey();') < ai_cgi.index('store->LoadApiKey(user, &persisted);') < ai_cgi.index('return Field(root, "api_key");')
+    assert "legacy" in (root / "ai_search.md").read_text(encoding="utf-8")
     assert "BuildValidWikiRevisionPredicate" in store
     assert ".current_revision_id=" in store and "invalid_citation" in store
     assert "ContinueTask" in store
@@ -43,8 +45,13 @@ def main() -> int:
     assert "ContinueTask(context.task)" in store
     assert "dirty_generation > published_generation" in compiler
     assert "LoadWikiCandidates(task.user, static_cast<int>(kMaxWikiCandidates)" in compiler
+    assert "published_lease_epoch" in store and "lease_epoch=" in index_worker
+    assert '"vectors." + std::to_string(generation) + "." + std::to_string(lease_epoch)' in index_worker
+    assert "published_lease_epoch" in compiler and "UserIndexPath(snapshot_root_" in compiler
+    assert "COALESCE(l.src_md5,'')='' OR EXISTS" in store
+    assert "invalid_chunk.state<>'PUBLISHED'" in store
     assert "invalid_active_vector" in index_worker
-    assert "FailIndexGeneration(user, worker, generation, error.str())" in index_worker
+    assert "FailIndexGeneration(user, worker, generation, lease_epoch, error.str())" in index_worker
     assert "record.dimension != dimension" in index_worker
     assert "record.dimension != dimension || record.embedding.size()" not in index_worker
     assert "LoadIndexState" in store and "ReadSingle" not in store[store.index("bool KnowledgeStore::LoadIndexState"):store.index("bool KnowledgeStore::ClaimDirtyIndex")]
