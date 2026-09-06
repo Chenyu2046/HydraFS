@@ -53,6 +53,7 @@ knowledge_test_targets=$(CGI_BIN_PATH)/knowledge_chunker_test \
 	$(CGI_BIN_PATH)/wiki_patch_validator_test \
 	$(CGI_BIN_PATH)/knowledge_multi_source_wiki_test \
 	$(CGI_BIN_PATH)/document_extractor_timeout_test \
+	$(CGI_BIN_PATH)/knowledge_repair_batch_test \
 	$(CGI_BIN_PATH)/faiss_snapshot_test \
 	$(CGI_BIN_PATH)/knowledge_task_claim_test
 
@@ -311,6 +312,12 @@ $(CGI_BIN_PATH)/document_extractor_timeout_test: $(TEST_PATH)/document_extractor
 test_document_extractor_timeout: $(CGI_BIN_PATH)/document_extractor_timeout_test
 	$(CGI_BIN_PATH)/document_extractor_timeout_test
 
+$(CGI_BIN_PATH)/knowledge_repair_batch_test: $(TEST_PATH)/knowledge_repair_batch_test.cpp $(COMMON_PATH)/knowledge_store.o $(COMMON_PATH)/knowledge_task.o $(COMMON_PATH)/make_log.o
+	$(CXX) $^ -o $@ $(CXXFLAGS) $(CPPLFAGS) -lmysqlclient -lpthread
+
+test_knowledge_repair_batch: $(CGI_BIN_PATH)/knowledge_repair_batch_test
+	$(CGI_BIN_PATH)/knowledge_repair_batch_test
+
 $(CGI_BIN_PATH)/faiss_snapshot_test: $(TEST_PATH)/faiss_snapshot_test.cpp $(COMMON_PATH)/faiss_snapshot.o
 	$(CXX) $^ -o $@ $(CXXFLAGS) $(CPPLFAGS) $(AI_LIBS)
 
@@ -410,5 +417,5 @@ clean:
 	-rm -rf *.o $(target) $(TEST_PATH)/*.o $(CGI_SRC_PATH)/*.o $(COMMON_PATH)/*.o
 
 # 声明伪文件
-.PHONY:clean ALL test_dashscope_mime test_storage_query test_storage_resilience test_storage_metadata_lease test_knowledge_chunker test_wiki_patch_validator test_knowledge_multi_source_wiki test_document_extractor_timeout test_faiss_snapshot test_knowledge_task_claim
+.PHONY:clean ALL test_dashscope_mime test_storage_query test_storage_resilience test_storage_metadata_lease test_knowledge_chunker test_wiki_patch_validator test_knowledge_multi_source_wiki test_document_extractor_timeout test_knowledge_repair_batch test_faiss_snapshot test_knowledge_task_claim
 #######################################################################

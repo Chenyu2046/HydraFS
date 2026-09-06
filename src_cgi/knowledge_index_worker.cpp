@@ -8,7 +8,9 @@ extern "C" {
 }
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
+#include <sstream>
 #include <string>
 #include <unistd.h>
 #include <vector>
@@ -52,9 +54,31 @@ int main() {
         std::vector<std::int64_t> ids;
         std::vector<std::vector<float>> vectors;
         for (const auto &record : records) {
-            if (record.dimension != dimension || record.embedding.size() != static_cast<std::size_t>(dimension)) continue;
+            bool invalid = record.id <= 0 || record.dimension != dimension ||
+                           record.embedding.size() != static_cast<std::size_t>(dimension) ||
+                           record.embedding_bytes != record.embedding.size() * sizeof(float);
+            double norm_squared = 0.0;
+            for (const float value : record.embedding) {
+                if (!std::isfinite(value)) invalid = true;
+                norm_squared += static_cast<double>(value) * value;
+            }
+            if (!std::isfinite(norm_squared) || norm_squared <= 0.0) invalid = true;
+            if (invalid) {
+                std::ostringstream error;
+                error << "invalid_active_vector invalid_vector_id=" << record.id
+                      << " expected_dimension=" << dimension
+                      << " actual_dimension=" << record.dimension
+                      << " actual_size=" << record.embedding.size()
+                      << " actual_bytes=" << record.embedding_bytes;
+                store.FailIndexGeneration(user, worker, generation, error.str());
+                ids.clear();
+                vectors.clear();
+                invalid = true;
+                break;
+            }
             ids.push_back(record.id); vectors.push_back(record.embedding);
         }
+        if (ids.size() != records.size()) continue;
         const std::string path = UserDirectory(root, user) + "/vectors." + std::to_string(generation) + ".faiss";
         if (!hydrastore::FaissSnapshot::Build(path, dimension, ids, vectors)) {
             store.FailIndexGeneration(user, worker, generation, "FAISS snapshot build failed");

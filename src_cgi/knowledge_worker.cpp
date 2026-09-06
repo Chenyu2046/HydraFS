@@ -292,9 +292,10 @@ bool ProcessTask(hydrastore::KnowledgeStore *store, const hydrastore::KnowledgeT
                  const std::string &embedding_model, const std::string &vl_model, int dimension,
                  const std::string &configured_key, const std::string &storage_ip,
                  const std::string &storage_port, const std::string &storage_client,
-                 bool *retryable, bool *skipped) {
+                 bool *retryable, bool *skipped, bool *continued) {
     if (retryable) *retryable = true;
     if (skipped) *skipped = false;
+    if (continued) *continued = false;
     std::string api_key = configured_key;
     if (api_key.empty()) store->LoadApiKey(task.user, &api_key);
     if (task.task_type == "delete_source") {
@@ -311,7 +312,7 @@ bool ProcessTask(hydrastore::KnowledgeStore *store, const hydrastore::KnowledgeT
         hydrastore::WikiCompiler compiler(Config("dashscope", "wiki_model", "qwen-plus"), "wiki-compiler-v2", dimension,
                                           embedding_model, Config("faiss", "user_index_dir", "/data/faiss/users"));
         std::string error;
-        return compiler.Compile(store, task, api_key, &error);
+        return compiler.Compile(store, task, api_key, &error, continued);
     }
     return ProcessSource(store, task, embedding_model, vl_model, dimension, api_key, storage_ip, storage_port, storage_client, retryable, skipped);
 }
@@ -327,7 +328,9 @@ int main() {
     const std::string mysql_database = Config("mysql", "database", "yuncuchu");
     const std::string embedding_model = Config("dashscope", "embedding_model", "text-embedding-v3");
     const std::string vl_model = Config("dashscope", "vl_model", "qwen-vl-plus");
-    const std::string configured_key = Config("dashscope", "api_key");
+    const char *environment_key = std::getenv("DASHSCOPE_API_KEY");
+    const std::string configured_key = environment_key && *environment_key
+        ? environment_key : Config("dashscope", "api_key");
     const int dimension = std::max(1, std::atoi(Config("dashscope", "embedding_dimension", "1024").c_str()));
     const std::string storage_ip = Config("storage_web_server", "ip");
     const std::string storage_port = Config("storage_web_server", "port");
@@ -352,9 +355,11 @@ int main() {
         const auto started = std::chrono::steady_clock::now();
         bool retryable = true;
         bool skipped = false;
-        const bool ok = ProcessTask(&store, task, embedding_model, vl_model, dimension, configured_key, storage_ip, storage_port, storage_client, &retryable, &skipped);
-        if (ok) store.FinishTask(task);
-        else if (skipped) store.SkipTask(task, "unsupported or empty source");
+        bool continued = false;
+        const bool ok = ProcessTask(&store, task, embedding_model, vl_model, dimension, configured_key, storage_ip, storage_port, storage_client, &retryable, &skipped, &continued);
+        if (ok) {
+            if (!continued) store.FinishTask(task);
+        } else if (skipped) store.SkipTask(task, "unsupported or empty source");
         else {
             const bool failed = store.FailTask(task, "knowledge task failed", retryable);
             if (failed && (task.task_type == "compile_wiki" || task.task_type == "repair_wiki")) {
@@ -365,7 +370,7 @@ int main() {
             std::chrono::steady_clock::now() - started).count();
         LOG("cgi", "knowledge_worker", "task=%lld type=%s worker=%s epoch=%lld stage=%s\n",
             static_cast<long long>(task.id), task.task_type.c_str(), worker_id.c_str(),
-            static_cast<long long>(task.lease_epoch), ok ? "finish" : "fail");
+            static_cast<long long>(task.lease_epoch), ok ? (continued ? "continue" : "finish") : "fail");
         LOG("cgi", "knowledge_worker", "task=%lld type=%s worker=%s epoch=%lld retry=%d elapsed_ms=%lld stage=done\n",
             static_cast<long long>(task.id), task.task_type.c_str(), worker_id.c_str(),
             static_cast<long long>(task.lease_epoch), task.retry_count,

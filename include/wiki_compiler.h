@@ -26,7 +26,8 @@ public:
                  const std::string &snapshot_root = "/data/faiss/users");
 
     bool Compile(KnowledgeStore *store, const KnowledgeTaskClaim &task,
-                 const std::string &api_key, std::string *error);
+                 const std::string &api_key, std::string *error,
+                 bool *continued = nullptr);
 
 private:
     std::string model_;

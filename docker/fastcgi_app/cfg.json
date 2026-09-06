@@ -39,7 +39,7 @@
 
 	"dashscope":
 	{
-		"api_key": "sk-7d7d92f9f5024501b69e09076e5a2978",
+		"api_key": "",
 		"embedding_model": "text-embedding-v3",
 		"wiki_model": "qwen-plus",
 		"vl_model": "qwen-vl-plus",

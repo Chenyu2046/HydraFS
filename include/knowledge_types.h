@@ -2,6 +2,7 @@
 #define HYDRASTORE_KNOWLEDGE_TYPES_H
 
 #include <cstdint>
+#include <cstddef>
 #include <string>
 #include <utility>
 #include <vector>
@@ -56,6 +57,7 @@ struct KnowledgeVectorRecord {
     std::int64_t source_id = 0;
     std::string model;
     int dimension = 0;
+    std::size_t embedding_bytes = 0;
     std::vector<float> embedding;
 };
 

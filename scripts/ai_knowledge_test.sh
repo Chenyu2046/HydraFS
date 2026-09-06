@@ -13,4 +13,5 @@ docker compose run --rm --no-deps fastcgi_app /app/bin_cgi/faiss_snapshot_test
 
 if [ "${HYDRA_RUN_DB_TEST:-0}" = "1" ]; then
     docker compose run --rm --no-deps fastcgi_app /app/bin_cgi/knowledge_task_claim_test
+    docker compose run --rm --no-deps fastcgi_app /app/bin_cgi/knowledge_repair_batch_test
 fi

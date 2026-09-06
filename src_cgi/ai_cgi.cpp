@@ -35,6 +35,12 @@ std::string Cfg(const char *section, const char *key, const char *fallback = "")
     return value;
 }
 
+std::string GlobalApiKey() {
+    const char *environment = std::getenv("DASHSCOPE_API_KEY");
+    if (environment && *environment) return environment;
+    return Cfg("dashscope", "api_key");
+}
+
 std::string Field(cJSON *root, const char *name) {
     cJSON *item = cJSON_GetObjectItem(root, name);
     return item && item->type == cJSON_String && item->valuestring ? item->valuestring : std::string();
@@ -119,7 +125,7 @@ hydrastore::KnowledgeStore MakeStore() {
 }
 
 std::string ApiKey(hydrastore::KnowledgeStore *store, cJSON *root, const std::string &user) {
-    const std::string configured = Cfg("dashscope", "api_key");
+    const std::string configured = GlobalApiKey();
     if (!configured.empty()) return configured;
     std::string persisted;
     store->LoadApiKey(user, &persisted);
@@ -364,7 +370,7 @@ int HandleLinks(cJSON *root,bool backlinks) {
 }
 
 int HandleGetApiKey(cJSON *root) {
-    std::string user,token;if(!Required(root,&user,&token)){Error(4,"token error");return -1;}hydrastore::KnowledgeStore store=MakeStore();std::string key;if(!store.Connect()||!store.LoadApiKey(user,&key)){Error(1,"db error");return -1;}const bool configured=!Cfg("dashscope","api_key").empty()||!key.empty();cJSON *response=cJSON_CreateObject();cJSON_AddNumberToObject(response,"code",0);cJSON *data=cJSON_CreateObject();cJSON_AddNumberToObject(data,"configured",configured?1:0);cJSON_AddItemToObject(response,"data",data);Print(response);cJSON_Delete(response);return 0;
+    std::string user,token;if(!Required(root,&user,&token)){Error(4,"token error");return -1;}hydrastore::KnowledgeStore store=MakeStore();std::string key;if(!store.Connect()||!store.LoadApiKey(user,&key)){Error(1,"db error");return -1;}const bool configured=!GlobalApiKey().empty()||!key.empty();cJSON *response=cJSON_CreateObject();cJSON_AddNumberToObject(response,"code",0);cJSON *data=cJSON_CreateObject();cJSON_AddNumberToObject(data,"configured",configured?1:0);cJSON_AddItemToObject(response,"data",data);Print(response);cJSON_Delete(response);return 0;
 }
 
 int HandleSetApiKey(cJSON *root) {

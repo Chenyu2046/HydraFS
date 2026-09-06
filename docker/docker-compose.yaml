@@ -95,6 +95,7 @@ services:
     environment:
       AI_SEARCH_WORKERS: "4"
       KNOWLEDGE_WORKERS: "4"
+      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
     volumes:
       - ./nginx_fastdfs/client.conf:/etc/fdfs/client.conf
     depends_on:

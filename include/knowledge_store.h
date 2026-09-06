@@ -24,6 +24,7 @@ public:
     bool ClaimTask(const std::string &worker_id, KnowledgeTaskClaim *claim);
     bool RenewTask(const KnowledgeTaskClaim &claim);
     bool FinishTask(const KnowledgeTaskClaim &claim);
+    bool ContinueTask(const KnowledgeTaskClaim &claim);
     bool SkipTask(const KnowledgeTaskClaim &claim, const std::string &reason);
     bool FailTask(const KnowledgeTaskClaim &claim, const std::string &error,
                   bool retryable);
@@ -95,7 +96,9 @@ public:
     bool LoadWikiForSource(const std::string &user, const std::string &md5,
                            std::vector<WikiPageView> *pages);
     bool LoadStaleWikiForSource(const std::string &user, const std::string &md5,
-                                std::vector<WikiPageView> *pages);
+                                std::vector<WikiPageView> *pages, int limit = 3);
+    bool HasStaleWikiForSource(const std::string &user, const std::string &md5,
+                               bool *has_more);
     bool LoadBacklinks(const std::string &user, const std::string &md5,
                        std::vector<BacklinkView> *links);
     bool LoadRelated(const std::string &user, const std::string &md5,
@@ -111,7 +114,8 @@ public:
                           const std::vector<WikiPageEmbedding> &embeddings,
                           const std::string &model,
                           const std::string &compiler_version,
-                          int embedding_dimension, std::string *error);
+                          int embedding_dimension, std::string *error,
+                          bool *continued = nullptr);
     bool DeleteSourceKnowledge(const std::string &user, const std::string &md5,
                                std::string *error);
 
@@ -127,7 +131,14 @@ private:
     bool AffectedOne() const;
     bool ReadSingle(const std::string &sql, std::vector<std::string> *row);
     bool LoadWikiCandidateEvidence(const std::string &user,
-                                   std::vector<WikiCandidate> *candidates);
+                                   std::vector<WikiCandidate> *candidates,
+                                   bool require_valid_revision = true);
+    bool LoadWikiClaimsInternal(const std::string &user,
+                                const std::vector<std::int64_t> &revision_ids,
+                                std::vector<WikiClaimView> *claims,
+                                bool require_valid_revision);
+    std::string BuildValidWikiRevisionPredicate(const std::string &revision_alias,
+                                                const std::string &page_alias) const;
     bool VerifyTaskLeaseInTransaction(const KnowledgeTaskClaim &claim);
     bool EnsureConnection();
     void Close();

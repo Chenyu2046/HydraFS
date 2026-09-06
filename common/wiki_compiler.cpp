@@ -449,20 +449,18 @@ WikiCompiler::WikiCompiler(const std::string &model, const std::string &compiler
       snapshot_root_(snapshot_root), embedding_dimension_(embedding_dimension) {}
 
 bool WikiCompiler::Compile(KnowledgeStore *store, const KnowledgeTaskClaim &task,
-                           const std::string &api_key, std::string *error) {
+                           const std::string &api_key, std::string *error,
+                           bool *continued) {
+    if (continued) *continued = false;
     if (!store) { if (error) *error = "knowledge store is unavailable"; return false; }
     if (task.task_type == "repair_wiki") {
         std::vector<WikiPageView> stale_pages;
-        if (!store->LoadStaleWikiForSource(task.user, task.md5, &stale_pages)) {
+        if (!store->LoadStaleWikiForSource(task.user, task.md5, &stale_pages, 3)) {
             if (error) *error = "stale wiki lookup failed";
             return false;
         }
         if (stale_pages.empty()) return true;
         if (api_key.empty()) { if (error) *error = "DashScope key is not configured"; return false; }
-        if (stale_pages.size() > 3) {
-            if (error) *error = "too many stale wiki pages for one repair task";
-            return false;
-        }
         WikiEvidenceContext evidence;
         std::vector<std::string> existing_keys;
         for (const auto &stale : stale_pages) {
@@ -503,7 +501,7 @@ bool WikiCompiler::Compile(KnowledgeStore *store, const KnowledgeTaskClaim &task
         context.repair_mode = true;
         context.task = task;
         return store->PublishWikiPatch(context, patch, embeddings, model_, compiler_version_,
-                                       embedding_dimension_, error);
+                                       embedding_dimension_, error, continued);
     }
     if (api_key.empty()) { if (error) *error = "DashScope key is not configured"; return false; }
     SourceObject source;
@@ -538,7 +536,6 @@ bool WikiCompiler::Compile(KnowledgeStore *store, const KnowledgeTaskClaim &task
         if (error) *error = "index state lookup failed";
         return false;
     }
-    (void)dirty_generation;
     std::vector<WikiCandidate> candidates;
     if (published_generation > 0) {
         FaissSnapshot snapshot;
@@ -577,9 +574,32 @@ bool WikiCompiler::Compile(KnowledgeStore *store, const KnowledgeTaskClaim &task
             AddUniqueId(&revision_ids, item.second);
             if (revision_ids.size() == kMaxWikiCandidates) break;
         }
-        if (!store->LoadWikiCandidatesByRevisionIds(task.user, revision_ids, &candidates)) {
+        std::vector<WikiCandidate> faiss_candidates;
+        if (!store->LoadWikiCandidatesByRevisionIds(task.user, revision_ids, &faiss_candidates)) {
             if (error) *error = "wiki candidate lookup failed";
             return false;
+        }
+        for (const std::int64_t revision_id : revision_ids) {
+            for (const auto &candidate : faiss_candidates) {
+                if (candidate.revision_id == revision_id) {
+                    candidates.push_back(candidate);
+                    break;
+                }
+            }
+            if (candidates.size() == kMaxWikiCandidates) break;
+        }
+        if (dirty_generation > published_generation) {
+            std::vector<WikiCandidate> recent_candidates;
+            if (!store->LoadWikiCandidates(task.user, static_cast<int>(kMaxWikiCandidates), &recent_candidates)) {
+                if (error) *error = "wiki candidate lookup failed";
+                return false;
+            }
+            for (const auto &recent : recent_candidates) {
+                const bool duplicate = std::any_of(candidates.begin(), candidates.end(),
+                    [&](const WikiCandidate &candidate) { return candidate.page_key == recent.page_key; });
+                if (!duplicate) candidates.push_back(recent);
+                if (candidates.size() == kMaxWikiCandidates) break;
+            }
         }
     } else if (!store->LoadWikiCandidates(task.user, static_cast<int>(kMaxWikiCandidates), &candidates)) {
         if (error) *error = "wiki candidate lookup failed";
