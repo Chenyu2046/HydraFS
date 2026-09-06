@@ -92,7 +92,12 @@ export const aiSearch = async (query, user) => {
     data.files = data.files.map((f) => ({
       ...f,
       url: f.url ? f.url.replace(API_CONFIG.STORAGE_URL, API_CONFIG.BASE_URL) : '',
+      matches: Array.isArray(f.matches) ? f.matches : [],
+      snippets: Array.isArray(f.snippets) ? f.snippets : [],
     }));
+  }
+  if (Array.isArray(data.wiki)) {
+    data.wiki = data.wiki.map((page) => ({ ...page, kind: 'wiki' }));
   }
   return data;
 };
@@ -112,17 +117,24 @@ export const fetchFileCard = async (md5, user) => {
 /** 获取文件 Wiki 页面 */
 export const fetchWiki = async (md5, user) => {
   const d = await postJson('wiki', { user: user.username, token: user.token, md5 });
-  return d.data;
+  const page = d.data || (Array.isArray(d.pages) ? d.pages[0] : null);
+  return page ? { ...page, source: d.source || page.source } : null;
 };
 
 /** 获取反向链接（含显式 + 隐式自动链接） */
 export const fetchBacklinks = async (md5, user) => {
   const d = await postJson('backlinks', { user: user.username, token: user.token, md5 });
-  return d.data;
+  if (Array.isArray(d.links)) {
+    return d.links.map((link) => ({
+      concept: link.title || link.concept || 'related',
+      referenced_by: link.md5 ? [{ md5: link.md5, filename: link.title || link.page_key }] : [],
+    })).filter((link) => link.referenced_by.length > 0);
+  }
+  return d.data || [];
 };
 
 /** 获取相关文件推荐 */
 export const fetchRelated = async (md5, user) => {
   const d = await postJson('related', { user: user.username, token: user.token, md5 });
-  return d.data;
+  return d.links || d.data || [];
 };

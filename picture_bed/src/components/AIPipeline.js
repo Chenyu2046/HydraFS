@@ -64,12 +64,17 @@ const STATUS = {
 const AIPipeline = ({ items = [] }) => (
   <List>
     {items.map((it, i) => {
-      const s = STATUS[it.status] || STATUS.pending;
+      const wikiReady = it.wiki_ready === 1 || it.wiki_ready === true || it.wiki_ready === '1';
+      const evidenceReady = it.ai_evidence_ready === 1 || it.ai_evidence_ready === true || it.ai_evidence_ready === '1';
+      const derivedStatus = wikiReady || evidenceReady
+        ? (wikiReady ? 'done' : 'embedding')
+        : it.status;
+      const s = STATUS[derivedStatus] || STATUS.pending;
       return (
         <Row key={i}>
           <span className="ext">{(it.ext || '').slice(0, 4)}</span>
           <span className="name">{it.name}</span>
-          <Badge $kind={it.status}>{s.icon}{s.label}</Badge>
+          <Badge $kind={derivedStatus}>{s.icon}{s.label}</Badge>
         </Row>
       );
     })}

@@ -23,6 +23,19 @@
 - scenario coverage for upload, share, and AI search currently lives mostly in
   `test-cases-slice1.md`, `chunked_upload.md`, and `ai_search.md`
 
+The HydraStore AI V2 verification set additionally covers deterministic
+chunking, fenced task claims, failed evidence generation retaining the prior
+published generation, immutable FAISS snapshots, user-scoped hydration,
+Wiki revision CAS, citation validation, and asynchronous source deletion.
+Those checks must run only after the implementation freeze because the V2
+technical plan defines a single final build/test stage.
+
+The containerized AI unit entrypoint is `scripts/ai_knowledge_test.sh`; it
+runs chunk determinism, Wiki patch validation, and FAISS snapshot tests, and
+runs the MySQL lease plus shared-reference deletion test when
+`HYDRA_RUN_DB_TEST=1` is set. The DB test binary is
+`knowledge_task_claim_test`.
+
 ## Rules
 
 - Do not claim backend compile coverage unless a real backend build path ran.

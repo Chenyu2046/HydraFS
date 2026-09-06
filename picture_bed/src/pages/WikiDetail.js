@@ -174,6 +174,7 @@ const WikiDetail = () => {
             <span className="kv">SOURCE · {wiki.source?.filename || '-'}</span>
             <span className="kv">TYPE · {(wiki.source?.type || '').toUpperCase() || '-'}</span>
             <span className="kv">MD5 · {(md5 || '').slice(0, 12)}…</span>
+            {wiki.revision_id && <span className="kv">REVISION · {wiki.revision_id}</span>}
           </Meta>
 
           {tags.length > 0 && (
@@ -189,6 +190,36 @@ const WikiDetail = () => {
             <Block>
               <h3>Summary</h3>
               <Summary>{wiki.summary}</Summary>
+            </Block>
+          )}
+
+          {wiki.body_markdown && (
+            <Block>
+              <h3>Evidence-backed Wiki</h3>
+              <Summary>{wiki.body_markdown}</Summary>
+            </Block>
+          )}
+
+          {wiki.claims?.length > 0 && (
+            <Block>
+              <h3>Claims &amp; Citations</h3>
+              <Panel><PanelBody $pad="12px 18px">
+                {wiki.claims.map((claim, i) => (
+                  <div key={claim.id || i} style={{ marginBottom: 10, fontSize: 13, lineHeight: 1.6 }}>
+                    <div>{claim.text}</div>
+                    <div style={{ color: '#667085', fontSize: 11 }}>引用 {(claim.citations || claim.sources || []).length} 个证据块</div>
+                    {(claim.citations || claim.sources || []).length > 0 && (
+                      <div style={{ marginTop: 4, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                        {(claim.citations || claim.sources || []).map((citation, j) => (
+                          <Tag key={j} bordered={false} color="cyan">
+                            Chunk #{citation.chunk_id || citation.chunkId} · {String(citation.md5 || '').slice(0, 12)}…
+                          </Tag>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </PanelBody></Panel>
             </Block>
           )}
 

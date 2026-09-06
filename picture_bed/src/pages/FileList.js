@@ -129,7 +129,7 @@ const FileList = () => {
           <span style={{ fontSize: 16, color: 'var(--accent)' }}>{TYPE_ICON[(r.type||'').toLowerCase()] || <FileOutlined />}</span>
           <span style={{ fontWeight: 500 }}>{t || r.name}</span>
           {r.share_status === 1 && <Tag color="blue" bordered={false}>已分享</Tag>}
-          {r.wiki_ready === 1 && <Tag color="purple" bordered={false}>Wiki</Tag>}
+          {(r.wiki_ready === 1 || r.wiki_ready === true || r.wiki_ready === '1') && <Tag color="purple" bordered={false}>Wiki</Tag>}
         </Space>
       ),
     },

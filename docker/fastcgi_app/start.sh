@@ -70,11 +70,20 @@ spawn-fcgi -a 0.0.0.0 -p 10011 -f /app/bin_cgi/chunk_merge
 # AI 智能检索
 mkdir -p /data/faiss
 echo -n "AI："
-spawn-fcgi -a 0.0.0.0 -p 10012 -f /app/bin_cgi/ai
+AI_SEARCH_WORKERS=${AI_SEARCH_WORKERS:-4}
+spawn-fcgi -a 0.0.0.0 -p 10012 -F "$AI_SEARCH_WORKERS" -f /app/bin_cgi/ai
 
 # 知识层异步 worker（后台进程）
-echo -n "KnowledgeWorker："
-/app/bin_cgi/knowledge_worker &
+KNOWLEDGE_WORKERS=${KNOWLEDGE_WORKERS:-4}
+if [ "$KNOWLEDGE_WORKERS" -lt 1 ]; then KNOWLEDGE_WORKERS=1; fi
+if [ "$KNOWLEDGE_WORKERS" -gt 8 ]; then KNOWLEDGE_WORKERS=8; fi
+echo -n "KnowledgeIndexWorker："
+/app/bin_cgi/knowledge_index_worker &
+echo "OK"
+echo -n "KnowledgeWorker(${KNOWLEDGE_WORKERS})："
+for worker_index in $(seq 1 "$KNOWLEDGE_WORKERS"); do
+    /app/bin_cgi/knowledge_worker &
+done
 echo "OK"
 
 echo "所有 FastCGI 程序已启动"

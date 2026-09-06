@@ -80,7 +80,6 @@ const Actions = styled.div`
 const isImg = (t) => t && ['png','jpg','jpeg','gif','bmp','webp','svg'].includes(String(t).toLowerCase());
 
 const normalizeReady = (value) => value === 1 || value === true || value === '1' || value === 'true';
-const isTaskSuccess = (status) => ['success', 'done', 'completed'].includes(String(status || '').toLowerCase());
 const isTaskFailed = (status) => ['failed', 'error'].includes(String(status || '').toLowerCase());
 
 const FileDrawer = ({ open, file, onClose, onShare, onCancelShare, onDelete, onDownload }) => {
@@ -146,7 +145,7 @@ const FileDrawer = ({ open, file, onClose, onShare, onCancelShare, onDelete, onD
         const nextCard = await fetchFileCard(file.md5, user);
         setFileCard(nextCard || null);
         const taskStatus = nextCard?.task_status || nextCard?.parse_status;
-        const errorMsg = nextCard?.error_msg || '';
+        const errorMsg = nextCard?.error_msg || nextCard?.ai_error || '';
 
         if (isTaskFailed(taskStatus)) {
           setAiTask({
@@ -156,7 +155,7 @@ const FileDrawer = ({ open, file, onClose, onShare, onCancelShare, onDelete, onD
           return;
         }
 
-        if (normalizeReady(nextCard?.wiki_ready) || isTaskSuccess(taskStatus)) {
+        if (normalizeReady(nextCard?.wiki_ready)) {
           fetchWiki(file.md5, user)
             .then(nextWiki => { if (nextWiki) setWiki(nextWiki); })
             .catch(() => {});
@@ -183,7 +182,8 @@ const FileDrawer = ({ open, file, onClose, onShare, onCancelShare, onDelete, onD
 
   const aiAlertType = aiTask.status === 'failed' ? 'error' : aiTask.status === 'success' ? 'success' : 'info';
   const aiBusy = aiTask.status === 'submitting' || aiTask.status === 'running';
-  const wikiReady = normalizeReady(file.wiki_ready) || normalizeReady(fileCard?.wiki_ready) || !!wiki || aiTask.status === 'success';
+  const evidenceReady = normalizeReady(file.ai_evidence_ready) || normalizeReady(fileCard?.ai_evidence_ready);
+  const wikiReady = normalizeReady(file.wiki_ready) || normalizeReady(fileCard?.wiki_ready) || !!wiki;
   const summary = wiki?.summary || fileCard?.summary;
   const displayTags = tags.length > 0 ? tags : (() => {
     const rawTags = fileCard?.tags || fileCard?.tags_json;
@@ -221,6 +221,7 @@ const FileDrawer = ({ open, file, onClose, onShare, onCancelShare, onDelete, onD
         <span className="k">Uploaded</span>  <span className="v">{file.create_time}</span>
         <span className="k">Status</span>    <span className="v">
           {file.share_status === 1 ? <Tag color="blue" bordered={false}>已分享</Tag> : <Tag bordered={false}>私有</Tag>}
+          {evidenceReady && <Tag color="cyan" bordered={false}>Evidence</Tag>}
           {wikiReady && <Tag color="purple" bordered={false}>Wiki</Tag>}
         </span>
       </Kv>
@@ -243,6 +244,14 @@ const FileDrawer = ({ open, file, onClose, onShare, onCancelShare, onDelete, onD
             {displayTags.length > 0 && (
               <div style={{ marginTop: 10, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
                 {displayTags.map((t, i) => <Tag key={i} bordered={false}>#{t}</Tag>)}
+              </div>
+            )}
+            {wiki?.body_markdown && (
+              <Summary style={{ marginTop: 10, maxHeight: 220, overflow: 'auto' }}>{wiki.body_markdown}</Summary>
+            )}
+            {wiki?.claims?.length > 0 && (
+              <div style={{ marginTop: 10, fontSize: 12, color: '#667085' }}>
+                已绑定 {wiki.claims.length} 条带证据引用的结论
               </div>
             )}
           </>

@@ -39,3 +39,9 @@ Use targeted builds only when the task is clearly isolated:
 - frontend local build output: `picture_bed/build/`
 - backend build output: `bin_cgi/`
 - container runtime topology is defined only by `docker/docker-compose.yaml`
+
+The FastCGI image also compiles `knowledge_index_worker`; the runtime script
+starts four knowledge workers by default (bounded to 1..8) and one index
+worker. The AI schema is migrated independently from the storage V2 schema by
+`docker/mysql/migrate.sh`, and both checksums are part of the migration
+healthcheck.

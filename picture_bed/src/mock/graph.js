@@ -74,7 +74,9 @@ export { FILE_TYPES };
  */
 export const buildGraphFromFiles = (files) => {
   if (!Array.isArray(files) || files.length === 0) return null;
-  const nodes = files.slice(0, 80).map(f => ({
+  const ready = value => value === 1 || value === true || value === '1' || value === 'true';
+  const ordered = [...files].sort((a, b) => Number(ready(b.wiki_ready)) - Number(ready(a.wiki_ready)));
+  const nodes = ordered.slice(0, 80).map(f => ({
     id: f.md5,
     label: f.file_name || f.name || f.md5,
     type: classifyFileType(f.type),

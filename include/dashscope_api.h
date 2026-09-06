@@ -1,6 +1,8 @@
 #ifndef _DASHSCOPE_API_H_
 #define _DASHSCOPE_API_H_
 
+#include <stddef.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -17,10 +19,16 @@ extern "C" {
  */
 int dashscope_describe_image(const char *api_key, const char *image_url,
                               char *out_desc, int max_len);
+int dashscope_describe_image_model(const char *api_key, const char *model,
+                                   const char *image_url, char *out_desc,
+                                   int max_len);
 
 const char *image_mime_type(const char *file_type);
 int dashscope_describe_image_file(const char *api_key, const char *image_path,
                                   const char *file_type, char *out_desc, int max_len);
+int dashscope_describe_image_file_model(const char *api_key, const char *model,
+                                        const char *image_path, const char *file_type,
+                                        char *out_desc, int max_len);
 
 /**
  * @brief  调用 text-embedding-v3 模型，传入文本，返回 float 向量
@@ -36,6 +44,14 @@ int dashscope_describe_image_file(const char *api_key, const char *image_path,
 int dashscope_get_embedding(const char *api_key, const char *model,
                              const char *text,
                              float *out_vector, int dimension);
+
+/**
+ * Generate a bounded JSON-only response for the knowledge compiler.
+ * The prompt is treated as untrusted source context by the caller.
+ */
+int dashscope_generate_json(const char *api_key, const char *model,
+                             const char *system_prompt, const char *user_prompt,
+                             char *out_json, size_t output_size);
 
 #ifdef __cplusplus
 }

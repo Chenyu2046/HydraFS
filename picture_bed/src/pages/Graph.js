@@ -119,10 +119,12 @@ const classifyRelatedKind = (reason = '') => {
   return 'related';
 };
 
+const ready = value => value === 1 || value === true || value === '1' || value === 'true';
+
 const mergeRelatedLinks = async (graph, files, user) => {
   const nodeIds = new Set(graph.nodes.map(n => n.id));
   const linkByKey = new Map((graph.links || []).map(l => [edgeKey(l.source, l.target), l]));
-  const candidates = files.filter(f => f.wiki_ready === 1 && nodeIds.has(f.md5)).slice(0, 40);
+  const candidates = files.filter(f => ready(f.wiki_ready) && nodeIds.has(f.md5)).slice(0, 40);
 
   const batches = await Promise.allSettled(candidates.map(f => fetchRelated(f.md5, user)));
   batches.forEach((result, index) => {

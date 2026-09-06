@@ -41,3 +41,22 @@ FastDFS / DashScope / FAISS.
   handler is being edited.
 - A change in `picture_bed/src/services/` can change contract assumptions
   between the frontend and FastCGI routes.
+
+## HydraStore AI V2 Knowledge Layer
+
+The V2 AI path is separate from the storage data plane. `ai_parse_task` is a
+MySQL-backed queue claimed with `FOR UPDATE SKIP LOCKED`; leases are fenced by
+`worker_id` and `lease_epoch`. `knowledge_worker` extracts bounded UTF-8
+evidence, creates deterministic overlapping chunks, stores staging vectors,
+and publishes one evidence generation atomically. `knowledge_index_worker`
+builds immutable per-user `IndexIDMap2(IndexFlatIP)` snapshots using
+`knowledge_vector.id` as the stable label, then advances
+`knowledge_index_state.published_generation`.
+
+`ai_cgi` only reads the published generation during search and hydrates FAISS
+IDs with user-filtered SQL. Wiki compilation is an asynchronous second task:
+the model returns a bounded JSON patch, citations are checked against the
+published source chunks, and revisions are published with a page-level CAS
+transaction. The old `user_file_ai_desc`, `wiki_page`, and `wiki_link` tables
+remain compatibility surfaces; new V2 state lives in the additive
+`docker/mysql/hydra_ai_v2.sql` migration.

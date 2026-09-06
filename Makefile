@@ -46,8 +46,13 @@ chunk_upload=$(CGI_BIN_PATH)/chunk_upload
 chunk_merge=$(CGI_BIN_PATH)/chunk_merge
 ai=$(CGI_BIN_PATH)/ai
 worker=$(CGI_BIN_PATH)/knowledge_worker
+knowledge_index_worker=$(CGI_BIN_PATH)/knowledge_index_worker
 storage_gateway=$(CGI_BIN_PATH)/storage_gateway
 storage_gc_worker=$(CGI_BIN_PATH)/storage_gc_worker
+knowledge_test_targets=$(CGI_BIN_PATH)/knowledge_chunker_test \
+	$(CGI_BIN_PATH)/wiki_patch_validator_test \
+	$(CGI_BIN_PATH)/faiss_snapshot_test \
+	$(CGI_BIN_PATH)/knowledge_task_claim_test
 
 # 最终目标
 target=$(login)		\
@@ -64,8 +69,10 @@ target=$(login)		\
 	   $(chunk_merge) \
 	   $(ai) \
 	   $(worker) \
+	   $(knowledge_index_worker) \
 	   $(storage_gateway) \
-	   $(storage_gc_worker)
+	   $(storage_gc_worker) \
+	   $(knowledge_test_targets)
 ALL:$(target)
 
 #######################################################################
@@ -141,7 +148,8 @@ $(dealfile):$(CGI_SRC_PATH)/dealfile_cgi.o \
 			$(COMMON_PATH)/deal_mysql.o \
 			$(COMMON_PATH)/redis_op.o  \
 			$(COMMON_PATH)/cfg.o \
-			$(COMMON_PATH)/md5.o
+			$(COMMON_PATH)/md5.o \
+			$(COMMON_PATH)/knowledge_task.o
 	$(CC) $^ -o $@ $(LIBS)
 # 共享文件列表展示
 $(sharefiles):	$(CGI_SRC_PATH)/sharefiles_cgi.o \
@@ -212,8 +220,9 @@ $(CGI_SRC_PATH)/faiss_wrapper.o: $(COMMON_PATH)/faiss_wrapper.cpp
 $(ai): $(CGI_SRC_PATH)/ai_cgi.o \
 	   $(COMMON_PATH)/image_mime.o \
 	   $(CGI_SRC_PATH)/dashscope_api.o \
-	   $(CGI_SRC_PATH)/faiss_wrapper.o \
-	   $(COMMON_PATH)/knowledge_task.o \
+	   $(COMMON_PATH)/knowledge_store.o \
+	   $(COMMON_PATH)/faiss_snapshot.o \
+	   $(COMMON_PATH)/storage_hash_util.o \
 	   $(COMMON_PATH)/make_log.o \
 	   $(COMMON_PATH)/util_cgi.o \
 	   $(COMMON_PATH)/cJSON.o \
@@ -231,6 +240,21 @@ $(COMMON_PATH)/storage_object_reader.o: $(COMMON_PATH)/storage_object_reader.cpp
 	$(CXX) -c $< -o $@ $(CXXFLAGS) $(CPPLFAGS)
 
 $(COMMON_PATH)/image_mime.o: $(COMMON_PATH)/image_mime.cpp
+	$(CXX) -c $< -o $@ $(CXXFLAGS) $(CPPLFAGS)
+
+$(COMMON_PATH)/knowledge_store.o: $(COMMON_PATH)/knowledge_store.cpp
+	$(CXX) -c $< -o $@ $(CXXFLAGS) $(CPPLFAGS)
+
+$(COMMON_PATH)/knowledge_chunker.o: $(COMMON_PATH)/knowledge_chunker.cpp
+	$(CXX) -c $< -o $@ $(CXXFLAGS) $(CPPLFAGS)
+
+$(COMMON_PATH)/document_extractor.o: $(COMMON_PATH)/document_extractor.cpp
+	$(CXX) -c $< -o $@ $(CXXFLAGS) $(CPPLFAGS)
+
+$(COMMON_PATH)/wiki_compiler.o: $(COMMON_PATH)/wiki_compiler.cpp
+	$(CXX) -c $< -o $@ $(CXXFLAGS) $(CPPLFAGS)
+
+$(COMMON_PATH)/faiss_snapshot.o: $(COMMON_PATH)/faiss_snapshot.cpp
 	$(CXX) -c $< -o $@ $(CXXFLAGS) $(CPPLFAGS)
 
 $(CGI_BIN_PATH)/dashscope_mime_test: $(TEST_PATH)/dashscope_mime_test.cpp $(COMMON_PATH)/image_mime.cpp
@@ -260,11 +284,39 @@ $(CGI_BIN_PATH)/storage_metadata_lease_test: $(TEST_PATH)/storage_metadata_lease
 test_storage_metadata_lease: $(CGI_BIN_PATH)/storage_metadata_lease_test
 	$(CGI_BIN_PATH)/storage_metadata_lease_test
 
+$(CGI_BIN_PATH)/knowledge_chunker_test: $(TEST_PATH)/knowledge_chunker_test.cpp $(COMMON_PATH)/knowledge_chunker.o $(COMMON_PATH)/storage_hash_util.o
+	$(CXX) $^ -o $@ $(CXXFLAGS) $(CPPLFAGS) -lcrypto
+
+test_knowledge_chunker: $(CGI_BIN_PATH)/knowledge_chunker_test
+	$(CGI_BIN_PATH)/knowledge_chunker_test
+
+$(CGI_BIN_PATH)/wiki_patch_validator_test: $(TEST_PATH)/wiki_patch_validator_test.cpp $(COMMON_PATH)/wiki_compiler.o $(COMMON_PATH)/knowledge_store.o $(COMMON_PATH)/storage_hash_util.o $(CGI_SRC_PATH)/dashscope_api.o $(COMMON_PATH)/image_mime.o $(COMMON_PATH)/cJSON.o $(COMMON_PATH)/make_log.o
+	$(CXX) $^ -o $@ $(CXXFLAGS) $(CPPLFAGS) $(LIBS) $(AI_LIBS)
+
+test_wiki_patch_validator: $(CGI_BIN_PATH)/wiki_patch_validator_test
+	$(CGI_BIN_PATH)/wiki_patch_validator_test
+
+$(CGI_BIN_PATH)/faiss_snapshot_test: $(TEST_PATH)/faiss_snapshot_test.cpp $(COMMON_PATH)/faiss_snapshot.o
+	$(CXX) $^ -o $@ $(CXXFLAGS) $(CPPLFAGS) $(AI_LIBS)
+
+test_faiss_snapshot: $(CGI_BIN_PATH)/faiss_snapshot_test
+	$(CGI_BIN_PATH)/faiss_snapshot_test
+
+$(CGI_BIN_PATH)/knowledge_task_claim_test: $(TEST_PATH)/knowledge_task_claim_test.cpp $(COMMON_PATH)/knowledge_store.o $(COMMON_PATH)/make_log.o
+	$(CXX) $^ -o $@ $(CXXFLAGS) $(CPPLFAGS) -lmysqlclient -lpthread
+
+test_knowledge_task_claim: $(CGI_BIN_PATH)/knowledge_task_claim_test
+	$(CGI_BIN_PATH)/knowledge_task_claim_test
+
 $(worker): $(CGI_SRC_PATH)/knowledge_worker.o \
 	   $(COMMON_PATH)/image_mime.o \
 	   $(CGI_SRC_PATH)/dashscope_api.o \
-	   $(CGI_SRC_PATH)/faiss_wrapper.o \
-	   $(COMMON_PATH)/knowledge_task.o \
+	   $(COMMON_PATH)/knowledge_store.o \
+	   $(COMMON_PATH)/knowledge_chunker.o \
+	   $(COMMON_PATH)/document_extractor.o \
+	   $(COMMON_PATH)/wiki_compiler.o \
+	   $(COMMON_PATH)/faiss_snapshot.o \
+	   $(COMMON_PATH)/storage_hash_util.o \
 	   $(COMMON_PATH)/storage_object_reader.o \
 	   $(COMMON_PATH)/storage_blob_store.o \
 	   $(COMMON_PATH)/make_log.o \
@@ -272,6 +324,18 @@ $(worker): $(CGI_SRC_PATH)/knowledge_worker.o \
 	   $(COMMON_PATH)/deal_mysql.o \
 	   $(COMMON_PATH)/cfg.o \
 	   $(COMMON_PATH)/md5.o
+	$(CXX) $^ -o $@ $(LIBS) $(AI_LIBS)
+
+$(CGI_SRC_PATH)/knowledge_index_worker.o: $(CGI_SRC_PATH)/knowledge_index_worker.cpp
+	$(CXX) -c $< -o $@ $(CXXFLAGS) $(CPPLFAGS)
+
+$(knowledge_index_worker): $(CGI_SRC_PATH)/knowledge_index_worker.o \
+	   $(COMMON_PATH)/knowledge_store.o \
+	   $(COMMON_PATH)/faiss_snapshot.o \
+	   $(COMMON_PATH)/storage_hash_util.o \
+	   $(COMMON_PATH)/make_log.o \
+	   $(COMMON_PATH)/cJSON.o \
+	   $(COMMON_PATH)/cfg.o
 	$(CXX) $^ -o $@ $(LIBS) $(AI_LIBS)
 
 # HydraStore V2 stateless object gateway
@@ -327,5 +391,5 @@ clean:
 	-rm -rf *.o $(target) $(TEST_PATH)/*.o $(CGI_SRC_PATH)/*.o $(COMMON_PATH)/*.o
 
 # 声明伪文件
-.PHONY:clean ALL test_dashscope_mime test_storage_query test_storage_resilience
+.PHONY:clean ALL test_dashscope_mime test_storage_query test_storage_resilience test_storage_metadata_lease test_knowledge_chunker test_wiki_patch_validator test_faiss_snapshot test_knowledge_task_claim
 #######################################################################

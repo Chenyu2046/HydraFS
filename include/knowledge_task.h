@@ -20,14 +20,17 @@
  *
  * 内部逻辑：
  *   - 检查是否已存在 pending/running 任务，存在则跳过（防重）
- *   - 文件类型不支持解析 → 直接标记为 'skipped'
+ *   - 文件类型不支持解析 → 仍创建任务，由 worker 在领取后标记为 'skipped'
  *   - 否则写入 pending 状态任务
  */
 int enqueue_parse_task(MYSQL *conn, const char *user, const char *md5,
                        const char *type, const char *source);
 
+int enqueue_knowledge_task(MYSQL *conn, const char *user, const char *md5,
+                           const char *task_type, const char *source, int force);
+
 /**
- * @brief 判断文件类型是否可解析（txt/md/code/pdf）
+ * @brief 判断文件类型是否由 AI Knowledge Worker 支持解析
  */
 int is_parseable_type(const char *type);
 

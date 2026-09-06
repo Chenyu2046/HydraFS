@@ -4,7 +4,7 @@ import { Button, Input, Empty, Spin, message } from 'antd';
 import {
   SearchOutlined, ArrowRightOutlined, FileOutlined,
   ThunderboltOutlined, ApiOutlined, NodeIndexOutlined,
-  CheckCircleOutlined,
+  CheckCircleOutlined, BookOutlined,
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
@@ -25,6 +25,8 @@ import {
   MOCK_GRAPH, MOCK_STATS, MOCK_RECENT_NODES, MOCK_AI_PIPELINE,
   buildGraphFromFiles, classifyFileType,
 } from '../mock/graph';
+
+const ready = value => value === 1 || value === true || value === '1' || value === 'true';
 
 /* ============================================================
  * Hero (left column)
@@ -237,7 +239,7 @@ const Home = () => {
     }
     const totalSize = files.reduce((s, f) => s + (f.size || 0), 0);
     const shared = files.filter(f => f.share_status === 1).length;
-    const wikiReady = files.filter(f => f.wiki_ready === 1).length;
+    const wikiReady = files.filter(f => ready(f.wiki_ready)).length;
     return [
       { label: 'Files indexed',    value: files.length },
       { label: 'Stored',           value: formatBytes(totalSize), unit: bytesUnit(totalSize) },
@@ -256,7 +258,7 @@ const Home = () => {
 
   const recentNodes = useMemo(() => {
     if (isEmptyAccount) return MOCK_RECENT_NODES;
-    const wikiFiles = (files || []).filter(f => f.wiki_ready === 1).slice(0, 4);
+    const wikiFiles = (files || []).filter(f => ready(f.wiki_ready)).slice(0, 4);
     return wikiFiles.map(f => ({
       md5: f.md5,
       title: (f.file_name || f.name || '').replace(/\.[^.]+$/, ''),
@@ -272,7 +274,7 @@ const Home = () => {
     return recent.map(f => ({
       name: f.file_name || f.name,
       ext: f.type,
-      status: f.wiki_ready === 1 ? 'done' : 'pending',
+      status: ready(f.wiki_ready) ? 'done' : (ready(f.ai_evidence_ready) ? 'embedding' : 'pending'),
     }));
   }, [files, isEmptyAccount]);
 
@@ -282,7 +284,7 @@ const Home = () => {
     setSearching(true);
     try {
       const data = await aiSearch(q, user);
-      setResults(data.files || []);
+      setResults({ files: data.files || [], wiki: data.wiki || [] });
     } catch (e) {
       if (e.tokenExpired) { message.error('登录已过期'); logout(); return; }
       message.error('搜索失败：' + (e.message || ''));
@@ -337,14 +339,14 @@ const Home = () => {
             <Panel style={{ marginTop: 4 }}>
               <PanelHeader>
                 <h3>Search Results</h3>
-                <span className="subtitle">{results.length} matched</span>
+                <span className="subtitle">{(results.files || []).length + (results.wiki || []).length} matched</span>
               </PanelHeader>
               <PanelBody $pad="0 18px 12px">
-                {results.length === 0 ? (
+                {(results.files || []).length === 0 && (results.wiki || []).length === 0 ? (
                   <Empty description="没有匹配结果" image={Empty.PRESENTED_IMAGE_SIMPLE} />
                 ) : (
                   <SearchResults>
-                    {results.slice(0, 5).map(r => (
+                    {(results.files || []).slice(0, 5).map(r => (
                       <ResultRow key={r.md5}>
                         <div className="thumb">
                           {['png','jpg','jpeg','gif','webp'].includes((r.type||'').toLowerCase()) && r.url
@@ -353,7 +355,19 @@ const Home = () => {
                         </div>
                         <div className="meta">
                           <div className="name">{r.filename}</div>
-                          <div className="desc">{r.description || r.reason}</div>
+                          <div className="desc">{r.matches?.[0]?.snippet || r.snippets?.[0] || r.description || r.reason}</div>
+                          {r.matches?.[0]?.chunkId && <div className="desc">来源 Chunk #{r.matches[0].chunkId}</div>}
+                        </div>
+                      </ResultRow>
+                    ))}
+                    {(results.wiki || []).slice(0, 5).map(page => (
+                      <ResultRow key={`wiki-${page.page_key || page.revision_id}`}>
+                        <div className="thumb"><BookOutlined /></div>
+                        <div className="meta">
+                          <div className="name">{page.title || page.page_key}</div>
+                          <div className="desc">{page.summary || page.body_markdown}</div>
+                          {page.claims?.[0] && <div className="desc">Claim：{page.claims[0].text}</div>}
+                          <div className="desc">Wiki · revision #{page.revision_id}</div>
                         </div>
                       </ResultRow>
                     ))}

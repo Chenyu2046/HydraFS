@@ -8,7 +8,7 @@ import {
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { fetchUserImages } from '../services/images';
-import { describeFileByMd5, rebuildIndex } from '../services/ai';
+import { rebuildIndex } from '../services/ai';
 import { Panel, PanelHeader, PanelBody, SectionTitle, Pill } from '../components/primitives';
 
 const PageHead = styled.div`
@@ -111,7 +111,7 @@ const Knowledge = () => {
   }, [user]);
 
   const wikiNodes = useMemo(() => {
-    const arr = (files || []).filter(f => f.wiki_ready === 1);
+    const arr = (files || []).filter(f => f.wiki_ready === 1 || f.wiki_ready === true || f.wiki_ready === '1');
     if (!keyword.trim()) return arr;
     const k = keyword.toLowerCase();
     return arr.filter(f => (f.file_name || f.name || '').toLowerCase().includes(k));
@@ -120,13 +120,8 @@ const Knowledge = () => {
   const handleRebuild = async () => {
     setRebuilding(true);
     try {
-      let success = 0;
-      for (const f of files) {
-        try { await describeFileByMd5(f.md5, f.file_name || f.name, f.type, user, null, true); success++; }
-        catch {}
-      }
       await rebuildIndex(user);
-      message.success(`AI 描述重建完成：${success}/${files.length}`);
+      message.success('索引重建任务已受理，后台将生成新的稳定快照');
       load();
     } catch (e) {
       message.error('重建失败：' + (e.message || ''));

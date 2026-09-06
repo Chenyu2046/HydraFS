@@ -18,6 +18,7 @@
 #include "cfg.h"
 #include "cJSON.h"
 #include "md5.h"
+#include "knowledge_task.h"
 #include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
@@ -602,6 +603,14 @@ int del_file(char *user, char *md5, char *filename)
         ret = -1;
         goto END;
      }
+
+    /* 新知识层按用户引用异步失效，避免删除请求直接改写发布中的证据快照。 */
+    if (enqueue_knowledge_task(conn, user, md5, "delete_source", "delete", 1) != 0)
+    {
+        LOG(DEALFILE_LOG_MODULE, DEALFILE_LOG_PROC, "enqueue knowledge delete failed\n");
+        ret = -1;
+        goto END;
+    }
 
     //删除用户自己的 AI 检索记录，避免残留幽灵向量
     sprintf(sql_cmd, "delete from user_file_ai_desc where user = '%s' and md5 = '%s'", user, md5);

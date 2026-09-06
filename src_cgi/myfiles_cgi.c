@@ -311,36 +311,45 @@ int get_user_filelist(char *cmd, char *user, int start, int count)
         // sql语句，LEFT JOIN 知识层表获取解析状态
         snprintf(sql_cmd, sizeof(sql_cmd), "select user_file_list.*, file_info.url, file_info.size, file_info.type, "
                 "file_info.storage_mode, file_info.object_id, file_info.manifest_id, "
-                "COALESCE(uad.parse_status, 'pending') as parse_status, "
-                "CASE WHEN wp.id IS NOT NULL THEN 1 ELSE 0 END as wiki_ready "
+                "COALESCE(kd.evidence_state, COALESCE(uad.parse_status, 'pending')) as parse_status, "
+                "CASE WHEN kd.wiki_state = 'READY' THEN 1 ELSE 0 END as wiki_ready, "
+                "CASE WHEN kd.evidence_state = 'READY' THEN 1 ELSE 0 END as ai_evidence_ready, "
+                "CASE WHEN kd.evidence_state = 'PARTIAL' OR kd.truncated = 1 THEN 1 ELSE 0 END as ai_partial_source, "
+                "COALESCE(kd.last_error, uad.error_msg, '') as ai_error "
                 "from user_file_list "
                 "join file_info on file_info.md5 = user_file_list.md5 "
                 "left join user_file_ai_desc uad on uad.user = user_file_list.user and uad.md5 = user_file_list.md5 "
-                "left join wiki_page wp on wp.user = user_file_list.user and wp.md5 = user_file_list.md5 and wp.status = 'active' "
+                "left join knowledge_document kd on kd.user = user_file_list.user and kd.md5 = user_file_list.md5 "
                 "where user_file_list.user = '%s' limit %d, %d", user, start, count);
     }
     else if (strcmp(cmd, "pvasc") == 0) //按下载量升序
     {
         snprintf(sql_cmd, sizeof(sql_cmd), "select user_file_list.*, file_info.url, file_info.size, file_info.type, "
                 "file_info.storage_mode, file_info.object_id, file_info.manifest_id, "
-                "COALESCE(uad.parse_status, 'pending') as parse_status, "
-                "CASE WHEN wp.id IS NOT NULL THEN 1 ELSE 0 END as wiki_ready "
+                "COALESCE(kd.evidence_state, COALESCE(uad.parse_status, 'pending')) as parse_status, "
+                "CASE WHEN kd.wiki_state = 'READY' THEN 1 ELSE 0 END as wiki_ready, "
+                "CASE WHEN kd.evidence_state = 'READY' THEN 1 ELSE 0 END as ai_evidence_ready, "
+                "CASE WHEN kd.evidence_state = 'PARTIAL' OR kd.truncated = 1 THEN 1 ELSE 0 END as ai_partial_source, "
+                "COALESCE(kd.last_error, uad.error_msg, '') as ai_error "
                 "from user_file_list "
                 "join file_info on file_info.md5 = user_file_list.md5 "
                 "left join user_file_ai_desc uad on uad.user = user_file_list.user and uad.md5 = user_file_list.md5 "
-                "left join wiki_page wp on wp.user = user_file_list.user and wp.md5 = user_file_list.md5 and wp.status = 'active' "
+                "left join knowledge_document kd on kd.user = user_file_list.user and kd.md5 = user_file_list.md5 "
                 "where user_file_list.user = '%s' order by pv asc limit %d, %d", user, start, count);
     }
     else if (strcmp(cmd, "pvdesc") == 0) //按下载量降序
     {
         snprintf(sql_cmd, sizeof(sql_cmd), "select user_file_list.*, file_info.url, file_info.size, file_info.type, "
                 "file_info.storage_mode, file_info.object_id, file_info.manifest_id, "
-                "COALESCE(uad.parse_status, 'pending') as parse_status, "
-                "CASE WHEN wp.id IS NOT NULL THEN 1 ELSE 0 END as wiki_ready "
+                "COALESCE(kd.evidence_state, COALESCE(uad.parse_status, 'pending')) as parse_status, "
+                "CASE WHEN kd.wiki_state = 'READY' THEN 1 ELSE 0 END as wiki_ready, "
+                "CASE WHEN kd.evidence_state = 'READY' THEN 1 ELSE 0 END as ai_evidence_ready, "
+                "CASE WHEN kd.evidence_state = 'PARTIAL' OR kd.truncated = 1 THEN 1 ELSE 0 END as ai_partial_source, "
+                "COALESCE(kd.last_error, uad.error_msg, '') as ai_error "
                 "from user_file_list "
                 "join file_info on file_info.md5 = user_file_list.md5 "
                 "left join user_file_ai_desc uad on uad.user = user_file_list.user and uad.md5 = user_file_list.md5 "
-                "left join wiki_page wp on wp.user = user_file_list.user and wp.md5 = user_file_list.md5 and wp.status = 'active' "
+                "left join knowledge_document kd on kd.user = user_file_list.user and kd.md5 = user_file_list.md5 "
                 "where user_file_list.user = '%s' order by pv desc limit %d, %d", user, start, count);
     }
 
@@ -497,6 +506,24 @@ int get_user_filelist(char *cmd, char *user, int start, int count)
         if (row[column_index] != NULL)
         {
             cJSON_AddNumberToObject(item, "wiki_ready", atoi(row[column_index]));
+        }
+
+        column_index++;
+        if (row[column_index] != NULL)
+        {
+            cJSON_AddNumberToObject(item, "ai_evidence_ready", atoi(row[column_index]));
+        }
+
+        column_index++;
+        if (row[column_index] != NULL)
+        {
+            cJSON_AddNumberToObject(item, "ai_partial_source", atoi(row[column_index]));
+        }
+
+        column_index++;
+        if (row[column_index] != NULL)
+        {
+            cJSON_AddStringToObject(item, "ai_error", row[column_index]);
         }
 
         cJSON_AddItemToArray(array, item);
